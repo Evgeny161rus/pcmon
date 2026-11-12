@@ -929,7 +929,9 @@ class Agent:
         if not ptr:
             k32.CloseHandle(h)
             return -1.0, -1.0
-        cpu_t, gpu_t = -1.0, -1.0
+        cpu_primary: list[float] = []
+        cpu_other: list[float] = []
+        gpu_values: list[float] = []
         try:
             hdr = ctypes.string_at(ptr, 44)
             magic, _, _, _, _, _, off_r, sz_r, num_r = struct.unpack("<4sIIqIIIII", hdr)
@@ -947,57 +949,41 @@ class Agent:
                         continue
                     lbl = label_orig + " " + label_user
                     if any(k in lbl for k in ("tctl", "tdie", "cpu package", "цп (tctl", "кристалл цп")):
-                        cpu_t = float(val)
-                    elif cpu_t < 0 and ("cpu" in lbl or "цп" in lbl):
-                        cpu_t = float(val)
-                    if gpu_t < 0 and ("gpu" in lbl or "гп" in lbl):
-                        gpu_t = float(val)
+                        cpu_primary.append(float(val))
+                    elif "cpu" in lbl or "цп" in lbl:
+                        cpu_other.append(float(val))
+                    if "gpu" in lbl or "гп" in lbl:
+                        gpu_values.append(float(val))
         except Exception:
             pass
         finally:
             k32.UnmapViewOfFile(ptr)
             k32.CloseHandle(h)
-        return cpu_t, gpu_t
+        # HWiNFO shared memory contains live sensor values. Prefer package/Tctl
+        # sensors and report the hottest current one, not a historical minimum.
+        cpu_values = cpu_primary or cpu_other
+        return (max(cpu_values) if cpu_values else -1.0,
+                max(gpu_values) if gpu_values else -1.0)
+
+    @staticmethod
+    def _current_temperatures(text: str) -> list[float]:
+        """Extract live Celsius readings while excluding HWiNFO Min/Max/Avg rows."""
+        values = []
+        for line in str(text or "").splitlines():
+            for match in re.finditer(r"(-?\d+(?:[.,]\d+)?)\s*°\s*C", line, re.I):
+                prefix = line[: match.start()]
+                if re.search(r"\b(?:min(?:imum)?|max(?:imum)?|avg|average)\s*[:=]?\s*$", prefix, re.I):
+                    continue
+                try:
+                    value = float(match.group(1).replace(",", "."))
+                except ValueError:
+                    continue
+                if 15.0 <= value <= 125.0:
+                    values.append(value)
+        return values
 
     def _hwinfo_reg_tray(self) -> float:
-        """Чтение температуры ЦП из значка HWiNFO64 в трее Windows 11 (UI Automation + реестр)."""
-        import winreg
-
-        # 1. Сразу выдвигаем значок датчика HWiNFO64 в видимую область трея, чтобы Windows обновляла его текст
-        fallback_val = -1.0
-        try:
-            base = r"Control Panel\NotifyIconSettings"
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, base) as root:
-                idx = 0
-                while True:
-                    try:
-                        sub = winreg.EnumKey(root, idx)
-                        idx += 1
-                    except OSError:
-                        break
-                    try:
-                        with winreg.OpenKey(root, sub, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
-                            exe, _ = winreg.QueryValueEx(k, "ExecutablePath")
-                            if "hwinfo" not in str(exe).lower():
-                                continue
-                            tip, _ = winreg.QueryValueEx(k, "InitialTooltip")
-                            m = re.search(r"(\d+(?:[.,]\d+)?)\s*°?\s*C", str(tip))
-                            if m:
-                                v = float(m.group(1).replace(",", "."))
-                                if 15.0 <= v <= 125.0:
-                                    fallback_val = v
-                                try:
-                                    prom, _ = winreg.QueryValueEx(k, "IsPromoted")
-                                except OSError:
-                                    prom = 0
-                                if not prom:
-                                    winreg.SetValueEx(k, "IsPromoted", 0, winreg.REG_DWORD, 1)
-                    except OSError:
-                        continue
-        except Exception:
-            pass
-
-        # 2. Живое значение с кнопки значка на панели задач через UI Automation
+        """Read live HWiNFO CPU values from the Windows 11 notification area."""
         try:
             ctypes.oledll.ole32.CoInitialize(None)
         except Exception:
@@ -1015,28 +1001,22 @@ class Agent:
             if hwnd:
                 el = self._uia.ElementFromHandle(hwnd)
                 btns = el.FindAll(4, self._uia_cond)
+                cpu_values = []
                 for i in range(btns.Length):
                     name = str(btns.GetElement(i).CurrentName or "")
                     low = name.lower()
-                    if ("°c" in low or "min:" in low) and any(k in low for k in ("цп", "cpu", "tctl", "tdie", "core", "package", "кристалл")):
-                        m = re.search(r"(\d+(?:[.,]\d+)?)\s*°\s*c", low)
-                        if m:
-                            v = float(m.group(1).replace(",", "."))
-                            if 15.0 <= v <= 125.0:
-                                return v
-                for i in range(btns.Length):
-                    name = str(btns.GetElement(i).CurrentName or "")
-                    low = name.lower()
-                    if "min:" in low and "max:" in low and "°c" in low:
-                        m = re.search(r"(\d+(?:[.,]\d+)?)\s*°\s*c", low)
-                        if m:
-                            v = float(m.group(1).replace(",", "."))
-                            if 15.0 <= v <= 125.0:
-                                return v
+                    if "°c" in low and any(k in low for k in ("цп", "cpu", "tctl", "tdie", "core", "package", "кристалл")):
+                        cpu_values.extend(self._current_temperatures(name))
+                if cpu_values:
+                    # If HWiNFO exposes several CPU sensors, use the hottest
+                    # live reading for thermal monitoring.
+                    return max(cpu_values)
         except Exception:
             self._uia = None
 
-        return fallback_val
+        # InitialTooltip from the registry is stale and may contain only Min/Max.
+        # If no live tray value is available, do not report a historical value.
+        return -1.0
 
     def _lhm_refresh(self) -> None:
         """Температуры из LibreHardwareMonitor, общей памяти HWiNFO64 или значка HWiNFO64 в трее."""
