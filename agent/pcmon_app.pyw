@@ -17,7 +17,8 @@ import time
 import urllib.request
 import webbrowser
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+FROZEN = bool(getattr(sys, "frozen", False))
+HERE = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 sys.path.insert(0, HERE)
 os.chdir(HERE)
 
@@ -106,12 +107,15 @@ def main() -> int:
         return 0
     stop_other_agents()
 
-    pyw = sys.executable
-    if pyw.lower().endswith("python.exe"):
-        cand = pyw[:-10] + "pythonw.exe"
-        if os.path.exists(cand):
-            pyw = cand
-    sa.AUTOSTART_CMD = f'"{pyw}" "{os.path.abspath(__file__)}" --tray'
+    if FROZEN:
+        sa.AUTOSTART_CMD = f'"{sys.executable}" --tray'
+    else:
+        pyw = sys.executable
+        if pyw.lower().endswith("python.exe"):
+            cand = pyw[:-10] + "pythonw.exe"
+            if os.path.exists(cand):
+                pyw = cand
+        sa.AUTOSTART_CMD = f'"{pyw}" "{os.path.abspath(__file__)}" --tray'
 
     args = sa.parse_args(["--quiet"])
     agent = sa.Agent(args)

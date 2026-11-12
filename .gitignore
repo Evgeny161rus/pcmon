@@ -1,5 +1,11 @@
 # PlatformIO build artifacts
 .pio/
+.venv/
+build/
+build-*/
+dist/
+dist-onedir/
+*.spec
 
 # Local Windows and Python state
 agent/city.json

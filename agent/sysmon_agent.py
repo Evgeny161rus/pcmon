@@ -575,7 +575,9 @@ class Agent:
         psutil.cpu_percent(interval=None, percpu=True)
 
     def _city_file(self) -> str:
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "city.json")
+        # Keep user-selected location persistent beside the EXE in PyInstaller builds.
+        root = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
+        return os.path.join(root, "city.json")
 
     def _load_city_cfg(self) -> None:
         try:
