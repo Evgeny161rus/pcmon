@@ -1,0 +1,28 @@
+# PlatformIO build artifacts
+.pio/
+
+# Local Windows and Python state
+agent/city.json
+agent/pcmon_app.log
+agent/__pycache__/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.bak
+.venv/
+venv/
+
+# Generated captures and archives
+_run/
+*.bmp
+*.zip
+*.7z
+*.rar
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
