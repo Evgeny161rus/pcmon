@@ -1,12 +1,13 @@
 // PC Monitor — настольный корпус для ES3C28P (2.8" ESP32-S3), экран под наклоном.
-// Три детали: part="shell" — рамка-коробка с окном экрана (печать лицом вниз),
-//              part="back"  — задняя крышка со стойками под винты M3 (печать плашмя),
-//              part="stand" — подставка-ложемент с наклоном tilt (печать на боку не нужна).
+// Две детали: part="shell" — рамка с окном экрана, скруглённым лицом и ретро-канавкой (печать лицом вниз),
+//              part="back"  — спинка-клин: крышка + опора + полозок под низом, держит экран под наклоном tilt
+//                             (выводится стоя на основании — так и печатать).
+// part="asm" — сборка как стоит на столе (для просмотра). USB-C оказывается сверху, кабель уходит назад.
 // Размеры сняты с нашего прошлого корпуса ES3C28P_retro_korpus_v4 (проверен на плате):
 // стойки 77.3×42, окно 61.4×48 (смещено на +2.7 мм по длине), лицо→плата 7.5 мм,
 // USB-C — вырез 21×7.8 на ДЛИННОЙ стороне (+7.1 мм от центра), на торце — вырез 12.4×7.7.
 
-part = "all";            // "shell" | "back" | "stand" | "all" (для просмотра)
+part = "asm";            // "shell" | "back" | "asm"
 tilt = 20;               // наклон экрана назад от вертикали, градусов (15–30)
 
 // ---- модуль
@@ -39,80 +40,107 @@ $fn = 48;
 module rbox(l, w, h, r) {
   linear_extrude(h) offset(r) square([l - 2 * r, w - 2 * r], center = true);
 }
+fil = 3;                 // скругление переднего ребра
+cap_t = 2.4;
+board_back = lip + glass_t + pcb_t;      // тыльная сторона платы от лица
+Dt = depth + cap_t;                      // толщина корпуса с крышкой
+W = out_w;
+lug_x = [-25, 28];
+Lb = 40;                                 // длина опоры за корпусом
+h_ = [-sin(tilt), cos(tilt)];            // «назад по столу» в координатах (y,z) корпуса
+V_ = [-cos(tilt), -sin(tilt)];           // «вверх»
 
-// -------------------------------------------------------------- рамка-коробка
-// Лицо рамки — на z=0 (печатается лицом на стол), открыта сзади.
+// -------------------------------------------------------------- рамка
+module shell_body() {
+  hull() {
+    for (i = [0:6]) let(a = 90 * i / 6, ins = fil - fil * sin(a))
+      translate([0, 0, fil - fil * cos(a)]) rbox(out_l - 2 * ins, out_w - 2 * ins, 0.01, max(r_out - ins, 0.6));
+    translate([0, 0, fil]) rbox(out_l, out_w, depth - fil, r_out);
+  }
+}
 module shell() {
   difference() {
-    rbox(out_l, out_w, depth, r_out);
-    // полость под модуль
+    shell_body();
     translate([0, 0, lip + glass_t - 0.01]) rbox(in_l, in_w, depth, 1);
-    // гнездо стекла
     translate([glass_shift, 0, lip]) rbox(glass_l + 2 * fit, glass_w + 2 * fit, glass_t + 0.02, 1.2);
-    // окно экрана со скосом
+    // окно со скосом
     translate([glass_shift + aa_shift, 0, -0.01])
       hull() {
         rbox(aa_l + 1.0 + 2 * lip, aa_w + 1.0 + 2 * lip, 0.01, 2);
         translate([0, 0, lip]) rbox(aa_l + 1.0, aa_w + 1.0, 0.03, 1.5);
       }
-    // USB-C / microSD — на длинной стороне, как в прошлом корпусе
+    // ретро-канавка по периметру
+    translate([0, 0, depth - 2.6]) linear_extrude(1.2) difference() {
+      offset(r_out + 2) square([out_l - 2 * r_out, out_w - 2 * r_out], center = true);
+      offset(r_out - 0.6) square([out_l - 2 * r_out, out_w - 2 * r_out], center = true);
+    }
+    // USB-C / microSD — длинная сторона (при установке — сверху)
     translate([usb_off, -out_w / 2, usb_d]) rotate([90, 0, 0])
       linear_extrude(wall * 3, center = true) offset(1.5) square([usb_len - 3, usb_h - 3], center = true);
+    // 2 винта M3 крепят спинку (сверху, рядом с USB)
+    for (x = lug_x) translate([x, -out_w / 2, depth - 3]) rotate([90, 0, 0]) cylinder(d = 3.4, h = wall * 3, center = true);
     // вырез на коротком торце
     translate([-out_l / 2, 0, end_d]) rotate([0, 90, 0])
       linear_extrude(wall * 3, center = true) offset(1.5) square([end_h - 3, end_w - 3], center = true);
   }
-  // упоры за платой: прижимают её к стеклу через крышку (стойки под 4 отверстия платы)
 }
 
-// -------------------------------------------------------------- крышка с упором
-// Крышка входит внутрь рамки на 2 мм и держит плату стойками через её отверстия.
-cap_t = 2.4;
-module back() {
-  stand_h = gap_back + back_parts;          // от крышки до платы
-  difference() {
-    union() {
-      rbox(out_l, out_w, cap_t, r_out);
-      // ободок, заходящий в рамку
-      translate([0, 0, cap_t]) difference() {
-        rbox(in_l - 0.3, in_w - 0.3, 2, 1);
-        translate([0, 0, -0.1]) rbox(in_l - 0.3 - 3.2, in_w - 0.3 - 3.2, 2.3, 0.5);
-      }
-      // стойки к отверстиям платы
-      for (x = [-1, 1], y = [-1, 1]) translate([x * hole_dx / 2, y * hole_dy / 2, cap_t])
-        cylinder(d = 6.2, h = stand_h - 0.2);
-    }
-    for (x = [-1, 1], y = [-1, 1]) translate([x * hole_dx / 2, y * hole_dy / 2, -0.1])
-      cylinder(d = screw_d, h = cap_t + stand_h + 1);
-    // зенковка под головки снаружи
-    for (x = [-1, 1], y = [-1, 1]) translate([x * hole_dx / 2, y * hole_dy / 2, -0.1])
-      cylinder(d1 = 6.2, d2 = 3.2, h = 1.6);
-    // вентиляция
-    for (i = [-3:3]) translate([i * 8, 0, -0.1]) rbox(3, out_w * 0.45, cap_t + 0.2, 1.4);
+// -------------------------------------------------------------- спинка-клин
+P_ = [W / 2, Dt];
+C_ = P_ + Lb * h_;
+module wedge2d() {
+  r = 5;
+  hull() {
+    polygon([[-W / 2, depth], [W / 2, depth], P_, [-W / 2 + r, Dt]]);
+    translate([-W / 2 + r, Dt - r]) circle(r);
+    translate(C_ - 2 * r * h_ - r * V_) circle(r);
+  }
+  // полозок под нижней гранью рамки
+  polygon([[W / 2, depth], P_, [W / 2 + (Dt - 1.5) * tan(tilt), 1.5], [W / 2, 1.5]]);
+}
+module cavity2d() {
+  hull() {
+    offset(delta = -2.4) polygon([[-W / 2, Dt], C_, P_]);
+    translate(10 * -V_) offset(delta = -2.4) polygon([[-W / 2, Dt], C_, P_]);
   }
 }
-
-// -------------------------------------------------------------- подставка
-// Ложемент: корпус ставится на наклонное «сиденье», упирается спиной в наклонную спинку,
-// снизу его держит бортик. Угол наклона экрана назад от вертикали — tilt.
-D = depth + cap_t;                     // толщина собранного корпуса
-st_w = out_l * 0.62;                   // ширина подставки; ставьте корпус USB-C вверх (поворот экрана — в компаньоне)
-module stand() {
-  base = 4; lipH = 4; rest = 34; rt = 4;
-  sy = base + D * sin(tilt);           // высота переднего края сиденья
-  B = [3 + D * cos(tilt), base];       // задняя кромка корпуса на сиденье
-  P5 = B + rest * [sin(tilt), cos(tilt)];
-  P6 = P5 + rt * [cos(tilt), -sin(tilt)];
-  pts = [[-2, 0], [-2, sy + lipH], [3, sy + lipH], [3, sy], B, P5, P6, [P6[0] + 6, 0]];
-  rotate([90, 0, 90]) translate([0, 0, -st_w / 2]) linear_extrude(st_w) polygon(pts);
+module xprof() { rotate([90, 0, 90]) linear_extrude(out_l, center = true) children(); }
+module back() {
+  difference() {
+    union() {
+      intersection() {
+        xprof() wedge2d();
+        // скругление задних углов по краям
+        rotate([90, 0, 0]) linear_extrude(200, center = true)
+          translate([0, 60]) offset(r_out) square([out_l - 2 * r_out, 200], center = true);
+      }
+      // ободок внутрь рамки
+      translate([0, 0, depth - 2]) difference() {
+        rbox(in_l - 0.3, in_w - 0.3, 2.01, 1);
+        translate([0, 0, -0.1]) rbox(in_l - 3.5, in_w - 3.5, 2.3, 0.5);
+      }
+      // ушки под 2 винта через верхнюю стенку рамки
+      for (x = lug_x) translate([x, -in_w / 2 + 0.15 + 2.5, depth - 3]) cube([8, 5, 6], center = true);
+      // стойки к отверстиям платы
+      for (x = [-1, 1], y = [-1, 1]) translate([x * hole_dx / 2, y * hole_dy / 2, board_back + 0.2])
+        cylinder(d = 6.2, h = depth - board_back);
+    }
+    // полость клина (открыта к столу)
+    xprof() translate([0, 0]) offset(0) cavity2d();
+    // плата крепится к стойкам саморезами со стороны экрана (отверстия платы вне стекла)
+    for (x = [-1, 1], y = [-1, 1]) translate([x * hole_dx / 2, y * hole_dy / 2, board_back - 1])
+      cylinder(d = screw_d, h = depth - board_back);
+    for (x = lug_x) translate([x, -in_w / 2, depth - 3]) rotate([90, 0, 0]) cylinder(d = 2.6, h = 14, center = true);
+    // вентиляция в крышке (воздух уходит в полость и вниз)
+    for (i = [-3:3]) translate([i * 8, -4, depth - 3]) rbox(3, out_w * 0.4, cap_t + 4, 1.4);
+  }
+}
+// перевод из координат корпуса в «стоит на столе»
+module world() {
+  multmatrix([[1, 0, 0, 0], [0, -sin(tilt), cos(tilt), 0], [0, -cos(tilt), -sin(tilt), cos(tilt) * W / 2 + sin(tilt) * Dt], [0, 0, 0, 1]])
+    children();
 }
 
-// -------------------------------------------------------------- вывод
 if (part == "shell") shell();
-else if (part == "back") back();
-else if (part == "stand") stand();
-else {
-  shell();
-  translate([0, 0, depth + 15]) back();
-  translate([0, out_w + 30, 0]) stand();
-}
+else if (part == "back") world() back();
+else world() { color("#3c6aa8") shell(); color("#e9e4d8") back(); }

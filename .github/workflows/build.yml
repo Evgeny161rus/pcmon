@@ -51,10 +51,10 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq openscad xvfb >/dev/null
           mkdir -p out
-          for p in shell back stand; do openscad -o out/pcmon-case-$p.stl -D "part=\"$p\"" case/pcmon_case.scad; done
-          xvfb-run -a openscad -o out/pcmon-case-preview.png --imgsize=1200,900 --viewall --autocenter --colorscheme=Tomorrow -D 'part="all"' case/pcmon_case.scad || true
-          for p in shell back stand; do xvfb-run -a openscad -o out/prev-$p.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,60,0,35,0 -D "part=\"$p\"" case/pcmon_case.scad || true; done
-          xvfb-run -a openscad -o out/prev-side.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,90,0,90,0 -D 'part="stand"' case/pcmon_case.scad || true
+          for p in shell back; do openscad -o out/pcmon-case-$p.stl -D "part=\"$p\"" case/pcmon_case.scad; done
+          xvfb-run -a openscad -o out/pcmon-case-preview.png --imgsize=1200,900 --viewall --autocenter --colorscheme=Tomorrow -D 'part="asm"' case/pcmon_case.scad || true
+          for p in shell back asm; do xvfb-run -a openscad -o out/prev-$p.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,60,0,35,0 -D "part=\"$p\"" case/pcmon_case.scad || true; done
+          xvfb-run -a openscad -o out/prev-side.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,90,0,90,0 -D 'part="asm"' case/pcmon_case.scad || true
           ls -la out
           for f in out/prev-*.png; do echo "B64 $f $(base64 -w0 $f)"; done
       - uses: actions/upload-artifact@v4
@@ -115,7 +115,7 @@ jobs:
             **pcmon-firmware-full.bin** — прошивка платы целиком, пишется с адреса 0x0 (например, `esptool.py --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin` или любым веб-прошивальщиком ESP32).
             **pcmon-firmware-app.bin** — только приложение, с адреса 0x10000: для обновления, когда загрузчик уже стоит.
 
-            **pcmon-case-shell.stl / back.stl / stand.stl** — корпус: рамка с окном экрана, задняя крышка (4 винта M3 через отверстия платы) и подставка с наклоном 20°. Исходник для своих размеров — case/pcmon_case.scad (OpenSCAD).
+            **pcmon-case-shell.stl / back.stl** — корпус: рамка с окном экрана и спинка-клин с наклоном 20° (4 самореза M3 через отверстия платы). Исходник для своих размеров — case/pcmon_case.scad (OpenSCAD).
 
             Контрольные суммы — в SHA256.txt. Сборка исходников: ${{ github.sha }}.
           make_latest: true
@@ -128,5 +128,4 @@ jobs:
             dist/pcmon-firmware-app.bin
             dist/pcmon-case-shell.stl
             dist/pcmon-case-back.stl
-            dist/pcmon-case-stand.stl
             dist/SHA256.txt
