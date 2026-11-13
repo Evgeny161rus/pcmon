@@ -90,6 +90,19 @@ struct Weather {
   int code = 0;          // код погоды WMO
   uint32_t atMs = 0;
 };
+// Последние 12 часов от ПК: 72 отрезка по 10 минут; -1 — ПК был выключен.
+struct History {
+  bool ok = false;
+  uint32_t t0 = 0;
+  uint16_t step = 600;
+  int16_t cpu[72], gpu[72], ct[72], gt[72], net[72];
+  int16_t hot = -1;
+  uint32_t hotT = 0;
+  uint16_t onMin = 0;
+  char top[28] = "";
+};
+bool monitorHistory(History& out);
+
 Weather monitorWeather();
 // Прогноз от ПК на час now+ahead (0 = текущий час). false — прогноза на этот час нет.
 bool monitorForecast(int ahead, Weather& out);

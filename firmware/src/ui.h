@@ -21,6 +21,7 @@ void uiSetSkin(int idx);
 void uiForceIdle(bool on);   // показать заставку принудительно (для проверки)
 void uiShowForecast(bool on);   // открыть/закрыть экран прогноза
 void uiShowMedia(bool on);      // открыть/закрыть медиапанель
+void uiShowNight(bool on);      // открыть/закрыть отчёт за 12 часов
 void uiShowMenu(int page);
 void uiReloadSettings();
 void uiRequest(int skin, int flip);   // из любого потока

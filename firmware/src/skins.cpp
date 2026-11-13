@@ -112,6 +112,9 @@ struct State {
   Bar mVol;
   void (*mKey)(int) = nullptr;
   uint32_t mAcc = 0, mFg = 0;
+  // отчёт за 12 часов
+  lv_obj_t *hLoad, *hTemp, *hRange, *hT[4], *hSum[4], *hSumV[3], *hEmpty;
+  lv_chart_series_t *hCpu, *hGpu, *hCt, *hGt;
   bool wxLong = false;   // описание с «ощущается»
 };
 
@@ -1707,6 +1710,137 @@ static void updMedia(const PcStats& pc) {
   setText(S.mMuteIcon, pc.muted ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX);
 }
 
+// ------------------------------------------------------------------ последние 12 часов
+// Открывается касанием часов: нагрузка и температуры CPU/GPU по 10 минут, сводка.
+static const int NIGHT = 103;
+
+static lv_obj_t* histChart(lv_obj_t* scr, int y, int h, uint32_t line) {
+  lv_obj_t* ch = lv_chart_create(scr);
+  lv_obj_remove_style_all(ch);
+  lv_obj_set_pos(ch, 12, y);
+  lv_obj_set_size(ch, 296, h);
+  lv_chart_set_type(ch, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(ch, 72);
+  lv_chart_set_div_line_count(ch, 3, 0);
+  lv_obj_set_style_line_color(ch, C(line), LV_PART_MAIN);
+  lv_obj_set_style_line_width(ch, 1, LV_PART_MAIN);
+  lv_obj_set_style_line_width(ch, 2, LV_PART_ITEMS);
+  lv_obj_set_style_size(ch, 0, 0, LV_PART_INDICATOR);
+  lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+  return ch;
+}
+
+void skinBuildNight(lv_obj_t* scr, int baseSkin) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = NIGHT;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  bool light = p.bg == 0xF4F2EE;
+  uint32_t c2 = light ? 0x2F6FD6 : 0x4CC9F0;
+  if ((p.acc & 0xFF) > ((p.acc >> 16) & 0xFF)) c2 = 0xFFB454;   // акцент синий — GPU оранжевым
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+  lab(scr, 12, 7, 200, "Последние 12 часов", f14b, p.fg);
+  S.hRange = lab(scr, 180, 9, 128, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  box(scr, 12, 30, 296, 1, p.line);
+
+  lab(scr, 12, 34, 100, "Нагрузка", f9, p.mut);
+  box(scr, 232, 40, 8, 3, p.acc, 1);
+  lab(scr, 243, 34, 30, "CPU", f8, p.mut);
+  box(scr, 274, 40, 8, 3, c2, 1);
+  lab(scr, 285, 34, 30, "GPU", f8, p.mut);
+  S.hLoad = histChart(scr, 50, 50, p.line);
+  lv_chart_set_axis_range(S.hLoad, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+  S.hGpu = lv_chart_add_series(S.hLoad, C(c2), LV_CHART_AXIS_PRIMARY_Y);
+  S.hCpu = lv_chart_add_series(S.hLoad, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
+
+  lab(scr, 12, 104, 140, "Температура", f9, p.mut);
+  S.hSum[3] = lab(scr, 160, 104, 148, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  S.hTemp = histChart(scr, 120, 50, p.line);
+  S.hGt = lv_chart_add_series(S.hTemp, C(c2), LV_CHART_AXIS_PRIMARY_Y);
+  S.hCt = lv_chart_add_series(S.hTemp, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
+  for (int i = 0; i < 4; i++) {
+    int x = 12 + i * 296 / 3 - (i == 0 ? 0 : i == 3 ? 40 : 20);
+    S.hT[i] = lab(scr, x, 172, 40, "", f8, p.mut, i == 0 ? LV_TEXT_ALIGN_LEFT : i == 3 ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_CENTER);
+  }
+  box(scr, 12, 188, 296, 1, p.line);
+  static const char* caps[3] = {"Пик температуры", "Трафик", "Больше всех"};
+  static const int cx[3] = {12, 132, 214}, cw[3] = {116, 78, 94};
+  for (int i = 0; i < 3; i++) {
+    S.hSum[i] = lab(scr, cx[i], 194, cw[i], caps[i], f8, p.mut);
+    S.hSumV[i] = lab(scr, cx[i], 208, cw[i], "—", f9b, p.fg);
+    lv_label_set_long_mode(S.hSumV[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_height(S.hSumV[i], 30);
+  }
+  S.hEmpty = lab(scr, 12, 80, 296, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
+}
+
+static void hhmm(char* b, size_t n, uint32_t t) {
+  time_t tt = t;
+  struct tm tm;
+  localtime_r(&tt, &tm);
+  snprintf(b, n, "%02d:%02d", tm.tm_hour, tm.tm_min);
+}
+
+static void updNight() {
+  static History h;
+  bool ok = monitorHistory(h);
+  if (!ok) {
+    setText(S.hEmpty, "Данных пока нет — их копит программа на ПК");
+    return;
+  }
+  setText(S.hEmpty, "");
+  int mn = 999, mx = -999;
+  for (int i = 0; i < 72; i++) {
+    lv_chart_set_series_value_by_id(S.hLoad, S.hCpu, i, h.cpu[i] >= 0 ? h.cpu[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hLoad, S.hGpu, i, h.gpu[i] >= 0 ? h.gpu[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hTemp, S.hCt, i, h.ct[i] > 0 ? h.ct[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hTemp, S.hGt, i, h.gt[i] > 0 ? h.gt[i] : LV_CHART_POINT_NONE);
+    if (h.ct[i] > 0) { mn = min(mn, (int)h.ct[i]); mx = max(mx, (int)h.ct[i]); }
+    if (h.gt[i] > 0) { mn = min(mn, (int)h.gt[i]); mx = max(mx, (int)h.gt[i]); }
+  }
+  if (mx > 0) {
+    lv_chart_set_axis_range(S.hTemp, LV_CHART_AXIS_PRIMARY_Y, mn - 3, mx + 3);
+    setFmt(S.hSum[3], "от %d до %d °C", mn, mx);
+  }
+  lv_chart_refresh(S.hLoad);
+  lv_chart_refresh(S.hTemp);
+  char a[8], b[8];
+  hhmm(a, sizeof(a), h.t0);
+  hhmm(b, sizeof(b), h.t0 + 72UL * h.step);
+  setFmt(S.hRange, "ПК работал %dч %02dм", h.onMin / 60, h.onMin % 60);
+  for (int i = 0; i < 4; i++) {
+    hhmm(a, sizeof(a), h.t0 + (uint32_t)i * 24UL * h.step);
+    setText(S.hT[i], a);
+  }
+  if (h.hot > 0) {
+    hhmm(a, sizeof(a), h.hotT);
+    setFmt(S.hSumV[0], "%d°C в %s", h.hot, a);
+  } else {
+    setText(S.hSumV[0], "—");
+  }
+  long mb = 0;
+  for (int i = 0; i < 72; i++) if (h.net[i] > 0) mb += h.net[i];
+  if (mb >= 1000) setFmt(S.hSumV[1], "%.1f ГБ", mb / 1000.0f);
+  else setFmt(S.hSumV[1], "%ld МБ", mb);
+  setText(S.hSumV[2], h.top[0] ? h.top : "—");
+}
+
+// Попадает ли касание в часы текущего скина.
+bool skinClockHit(int x, int y) {
+  lv_obj_t* objs[2] = {S.clock, S.date};
+  for (lv_obj_t* o : objs) {
+    if (!o) continue;
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    if (lv_area_get_width(&a) <= 1) continue;
+    if (x >= a.x1 - 10 && x <= a.x2 + 10 && y >= a.y1 - 10 && y <= a.y2 + 10) return true;
+  }
+  return false;
+}
+
 // Попадает ли касание в блок погоды текущего скина (значок, температура, прогноз).
 bool skinWeatherHit(int x, int y) {
   lv_obj_t* objs[3 + 8 * 2];
@@ -1764,6 +1898,10 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
   }
   if (S.idx == MEDIA) {
     updMedia(pc);
+    return;
+  }
+  if (S.idx == NIGHT) {
+    updNight();
     return;
   }
 

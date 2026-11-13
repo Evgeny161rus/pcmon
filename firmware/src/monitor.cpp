@@ -369,6 +369,48 @@ static void loadForecast() {
   p.end();
 }
 
+// ------------------------------------------------------------------ история
+static History hist;
+
+static void fillArr(JsonVariant a, int16_t* out) {
+  for (int i = 0; i < 72; i++) out[i] = -1;
+  if (!a.is<JsonArray>()) return;
+  int i = 0;
+  for (JsonVariant v : a.as<JsonArray>()) {
+    if (i >= 72) break;
+    out[i++] = v | -1;
+  }
+}
+
+static void handleHistory(JsonDocument& doc) {
+  static History tmp;      // разбираем вне блокировки, копируем под ней
+  History* h = &tmp;
+  *h = History();
+  h->ok = true;
+  h->t0 = doc["t0"] | 0UL;
+  h->step = doc["step"] | 600;
+  fillArr(doc["cpu"], h->cpu);
+  fillArr(doc["gpu"], h->gpu);
+  fillArr(doc["ct"], h->ct);
+  fillArr(doc["gt"], h->gt);
+  fillArr(doc["net"], h->net);
+  h->hot = doc["hot"] | -1;
+  h->hotT = doc["hotT"] | 0UL;
+  h->onMin = doc["onMin"] | 0;
+  copyStr(h->top, sizeof(h->top), doc["top"] | "");
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  hist = *h;
+  xSemaphoreGive(statsMux);
+}
+
+bool monitorHistory(History& out) {
+  if (!statsMux) return false;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  out = hist;
+  xSemaphoreGive(statsMux);
+  return out.ok;
+}
+
 // ------------------------------------------------------------------ USB
 static void handleUsbLine(char* line, size_t len) {
   if (line[0] != '{') return;
@@ -385,6 +427,10 @@ static void handleUsbLine(char* line, size_t len) {
   }
   if (doc["wx"] | 0) {      // почасовой прогноз от компаньона
     handleForecast(doc);
+    return;
+  }
+  if (doc["hist"] | 0) {    // последние 12 часов
+    handleHistory(doc);
     return;
   }
   if (!(doc["ok"] | false)) return;

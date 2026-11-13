@@ -281,6 +281,78 @@ class WifiReader:
         return out
 
 
+# --------------------------------------------------------------------------- история
+class History:
+    """Раз в минуту запоминает нагрузку, температуры и трафик; хранит сутки.
+    Для экрана сворачивает последние 12 часов в 72 отрезка по 10 минут."""
+
+    STEP = 600
+    SLOTS = 72
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.rows: list[list] = []      # [t, cpu, gpu, ct, gt, mb, top]
+        self._saved = 0.0
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self.rows = [r for r in json.load(f) if isinstance(r, list) and len(r) == 7]
+        except Exception:
+            self.rows = []
+
+    def add(self, cpu: float, gpu: float, ct: float, gt: float, mb: float, top: str) -> None:
+        now = int(time.time())
+        with self.lock:
+            self.rows.append([now, round(cpu, 1), round(gpu, 1), round(ct, 1), round(gt, 1), round(mb, 2), top])
+            self.rows = [r for r in self.rows if now - r[0] <= 86400]
+            if now - self._saved > 600:
+                self._saved = now
+                try:
+                    tmp = self.path + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(self.rows, f, separators=(",", ":"))
+                    os.replace(tmp, self.path)
+                except Exception:
+                    pass
+
+    def summary(self) -> dict:
+        end = int(time.time()) // self.STEP * self.STEP + self.STEP
+        t0 = end - self.STEP * self.SLOTS
+        cpu = [[] for _ in range(self.SLOTS)]
+        gpu = [[] for _ in range(self.SLOTS)]
+        ct = [-1.0] * self.SLOTS
+        gt = [-1.0] * self.SLOTS
+        net = [0.0] * self.SLOTS
+        tops: dict[str, int] = {}
+        hot = (-1.0, 0)
+        with self.lock:
+            rows = [r for r in self.rows if r[0] >= t0]
+        for t, c, g, tc, tg, mb, top in rows:
+            i = (t - t0) // self.STEP
+            if not 0 <= i < self.SLOTS:
+                continue
+            cpu[i].append(c)
+            gpu[i].append(g)
+            ct[i] = max(ct[i], tc)
+            gt[i] = max(gt[i], tg)
+            net[i] += mb
+            if top and c >= 10:
+                tops[top] = tops.get(top, 0) + 1
+            if tc > hot[0]:
+                hot = (tc, t)
+        avg = lambda v: int(round(sum(v) / len(v))) if v else -1  # noqa: E731
+        on = sum(1 for v in cpu if v)
+        top = max(tops, key=tops.get) if tops else ""
+        return {
+            "hist": 1, "t0": t0, "step": self.STEP,
+            "cpu": [avg(v) for v in cpu], "gpu": [avg(v) for v in gpu],
+            "ct": [int(round(v)) for v in ct], "gt": [int(round(v)) for v in gt],
+            "net": [int(round(v)) for v in net],
+            "hot": int(round(hot[0])), "hotT": hot[1], "top": top[:26],
+            "onMin": on * self.STEP // 60,
+        }
+
+
 # --------------------------------------------------------------------------- медиа
 MEDIA_VK = {"prev": 0xB1, "play": 0xB3, "next": 0xB0}
 MEDIA_APPS = {
@@ -611,6 +683,7 @@ class UsbLink(threading.Thread):
             buf = b""
             last = 0.0
             last_wx, last_wx_t0 = 0.0, None
+            last_hist = 0.0
             try:
                 while True:
                     now = time.time()
@@ -622,6 +695,10 @@ class UsbLink(threading.Thread):
                         line = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
                         s.write(line.encode("utf-8"))
                         self.sent += 1
+                        if now - last_hist > 300:
+                            last_hist = now
+                            hs = self.agent.history.summary()
+                            s.write((json.dumps(hs, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
                         wx = self.agent.forecast
                         if wx and (now - last_wx > 600 or wx.get("t0") != last_wx_t0):
                             last_wx, last_wx_t0 = now, wx.get("t0")
@@ -657,6 +734,7 @@ class Agent:
         self.wifi = WifiReader()
         self.usb = UsbLink(self, args.usb_port)
         self.forecast: dict = {}   # почасовой прогноз для заставки экрана
+        self.history = History(os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json"))
         self.forecast_source = ""
         self.forecast_error = ""
         self._wx_wake = threading.Event()
@@ -1393,11 +1471,28 @@ class Agent:
         }
 
     def sample_loop(self) -> None:
+        last_hist = 0.0
+        net_prev = None
         while True:
             try:
                 self.data = self._sample()
             except Exception as exc:
                 self.data = {"ok": False, "error": str(exc)[:120]}
+            now = time.time()
+            if now - last_hist >= 60:
+                last_hist = now
+                try:
+                    d = self.data
+                    n = psutil.net_io_counters()
+                    total = (n.bytes_recv + n.bytes_sent) if n else 0
+                    mb = max(0.0, (total - net_prev) / 1e6) if net_prev is not None else 0.0
+                    net_prev = total
+                    top = (self._top[0]["name"] if self._top else "")
+                    self.history.add(float(d["cpu"]["load"]), float(d.get("gpu", {}).get("load", 0) or 0),
+                                     float(d["cpu"].get("temp", -1)), float(d.get("gpu", {}).get("temp", -1) or -1),
+                                     mb, top)
+                except Exception:
+                    pass
             time.sleep(self.args.interval)
 
     # -- speedtest ----------------------------------------------------------
@@ -1880,6 +1975,8 @@ def make_handler(agent: Agent):
                 self._json(data)
             elif path == "/api/volume":
                 self._json({"ok": True, **agent.volume.state()})
+            elif path == "/api/history":
+                self._json(agent.history.summary())
             elif path == "/api/speedtest":
                 with agent.lock:
                     self._json({"ok": True, "speed": dict(agent.speed)})

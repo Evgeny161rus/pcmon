@@ -112,6 +112,7 @@ static bool pendingRebuild = false;
 static bool idleShown = false, idleForce = false;
 static bool fcShown = false;      // экран прогноза погоды
 static bool mediaShown = false;   // медиапанель
+static bool nightShown = false;   // отчёт за 12 часов
 static uint32_t fcAt = 0;
 static uint32_t offlineSince = 0;
 static int nightCap = 100;
@@ -618,8 +619,8 @@ static void goHomeCb(lv_event_t*) {
 static void homeClickCb(lv_event_t*) {
   if (millis() - gestureAt < 600) return;   // это был свайп, а не касание
   // касание погоды открывает прогноз, касание прогноза — возвращает назад
-  if (fcShown) {
-    fcShown = false;
+  if (fcShown || nightShown) {
+    fcShown = nightShown = false;
     pendingRebuild = true;
     click();
     return;
@@ -628,6 +629,13 @@ static void homeClickCb(lv_event_t*) {
   lv_indev_get_point(lv_indev_active(), &pt);
   if (skinWeatherHit(pt.x, pt.y)) {
     fcShown = true;
+    fcAt = millis();
+    pendingRebuild = true;
+    click();
+    return;
+  }
+  if (skinClockHit(pt.x, pt.y)) {   // касание часов — отчёт за 12 часов
+    nightShown = true;
     fcAt = millis();
     pendingRebuild = true;
     click();
@@ -677,7 +685,7 @@ static void homeGestureCb(lv_event_t*) {
   lv_dir_t d = lv_indev_get_gesture_dir(in);
   if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх/вниз — медиапанель
     gestureAt = millis();
-    fcShown = false;
+    fcShown = nightShown = false;
     mediaShown = true;
     pendingRebuild = true;
     lv_indev_wait_release(in);
@@ -1068,7 +1076,8 @@ static void buildAll() {
       skinUpdate(monitorSnapshot(), monitorWifi());
       return;
     }
-    if (fcShown) skinBuildForecast(scr, s);
+    if (nightShown) skinBuildNight(scr, s);
+    else if (fcShown) skinBuildForecast(scr, s);
     else if (idleShown) skinBuildIdle(scr, s);
     else skinBuild(scr, s);
     // прозрачный слой поверх скина: касание — меню, свайп — другой скин
@@ -1454,7 +1463,7 @@ static bool homeBlinkOnly() {
   settingsLock();
   int s = gSet.skin;
   settingsUnlock();
-  return home && !idleShown && !fcShown && !mediaShown && s == 5;
+  return home && !idleShown && !fcShown && !mediaShown && !nightShown && s == 5;
 }
 
 // ------------------------------------------------------------------ публичное
@@ -1507,7 +1516,7 @@ void uiLoop() {
   bool wantIdle = idleForce || (offlineSince && now - offlineSince > 20000UL);
   if (home && wantIdle != idleShown) {
     idleShown = wantIdle;
-    if (!fcShown && !mediaShown) pendingRebuild = true;
+    if (!fcShown && !mediaShown && !nightShown) pendingRebuild = true;
   }
   // медиапанель закрывается через 30 с без касаний
   if (mediaShown && (!home || now - lastActivity > 30000UL)) {
@@ -1515,8 +1524,8 @@ void uiLoop() {
     if (home) pendingRebuild = true;
   }
   // прогноз сам закрывается через 30 с
-  if (fcShown && (!home || now - fcAt > 30000UL)) {
-    fcShown = false;
+  if ((fcShown || nightShown) && (!home || now - fcAt > 30000UL)) {
+    fcShown = nightShown = false;
     if (home) pendingRebuild = true;
   }
   // ночью (23:00–07:00) заставка светит не ярче 10 %
@@ -1586,9 +1595,17 @@ void uiActivity() {
   }
 }
 
+void uiShowNight(bool on) {
+  nightShown = on;
+  fcShown = mediaShown = false;
+  fcAt = millis();
+  home = true;
+  pendingRebuild = true;
+}
+
 void uiShowMedia(bool on) {
   mediaShown = on;
-  fcShown = false;
+  fcShown = nightShown = false;
   home = true;
   pendingRebuild = true;
   uiActivity();
@@ -1596,6 +1613,7 @@ void uiShowMedia(bool on) {
 
 void uiShowForecast(bool on) {
   fcShown = on;
+  nightShown = mediaShown = false;
   fcAt = millis();
   home = true;
   pendingRebuild = true;
