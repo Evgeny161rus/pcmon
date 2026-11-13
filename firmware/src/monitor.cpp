@@ -413,7 +413,6 @@ static void usbPoll() {
 
 // ------------------------------------------------------------------ погода (серверы РФ по Wi-Fi)
 static Weather weather;
-static uint32_t nextWeather = 8000;
 static volatile bool reqWeatherNow = false;
 
 static int ruWeatherCode(const char* s) {
@@ -471,7 +470,6 @@ static bool pollGismeteo(Weather& wn) {
           int r = s->readBytes(buf + len, min((size_t)av, CAP - 1 - len));
           if (r > 0) len += r;
         } else {
-          usbPoll();
           vTaskDelay(pdMS_TO_TICKS(5));
         }
       }
@@ -553,7 +551,6 @@ static bool pollMailRu(Weather& wn) {
           int r = s->readBytes(buf + len, min((size_t)av, CAP - 1 - len));
           if (r > 0) len += r;
         } else {
-          usbPoll();
           vTaskDelay(pdMS_TO_TICKS(5));
         }
       }
@@ -611,6 +608,7 @@ Weather monitorWeather() {
   if (!statsMux) return weather;
   xSemaphoreTake(statsMux, portMAX_DELAY);
   Weather c = weather;
+  if (c.ok && millis() - c.atMs > 2UL * 3600UL * 1000UL) c.ok = false;   // устарела
   time_t now = time(nullptr);
   if (!c.ok && wxN > 0 && now > 1700000000 && (uint32_t)now >= wxT0) {
     uint32_t i = ((uint32_t)now - wxT0) / 3600UL;
@@ -624,6 +622,33 @@ Weather monitorWeather() {
   }
   xSemaphoreGive(statsMux);
   return c;
+}
+
+// Погода качается в своей задаче: TLS-соединение и разбор страницы занимают
+// до 10 секунд, и если делать это в задаче связи, USB-кадры от ПК не читаются,
+// а экран на это время решает, что ПК пропал.
+static void weatherTask(void*) {
+  uint32_t next = 8000;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    uint32_t now = millis();
+    if (WiFi.status() != WL_CONNECTED) continue;
+    if (!reqWeatherNow && (int32_t)(now - next) < 0) continue;
+    reqWeatherNow = false;
+    settingsLock();
+    bool haveCity = !gSet.cityGm.isEmpty() || !gSet.cityMail.isEmpty();
+    settingsUnlock();
+    if (!haveCity) {
+      next = millis() + 60UL * 1000UL;
+      continue;
+    }
+    weatherPoll();
+    xSemaphoreTake(statsMux, portMAX_DELAY);
+    bool ok = weather.ok && millis() - weather.atMs < 60000UL;
+    xSemaphoreGive(statsMux);
+    // удачно — через 20 минут; неудачно — через 15, чтобы не долбить сайты
+    next = millis() + (ok ? 20UL : 15UL) * 60UL * 1000UL;
+  }
 }
 
 // ------------------------------------------------------------------ task
@@ -656,15 +681,10 @@ static void netTask(void*) {
       nextQuery = now + 5000;
       if (!usb && wifiUp && (settingsAgentHost().isEmpty() || !wasOnline)) sendQuery();
     }
-    if (wifiUp && (now >= nextWeather || reqWeatherNow)) {
-      reqWeatherNow = false;
-      weatherPoll();
-      nextWeather = millis() + (weather.ok ? 20UL * 60UL * 1000UL : 60UL * 1000UL);
-    }
     if (now >= nextHello) {
       nextHello = now + 5000;
       settingsLock();
-      String hello = "{\"hello\":1,\"fw\":\"1.3.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
+      String hello = "{\"hello\":1,\"fw\":\"1.4.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
                      ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"call\":\"" + gSet.callsign + "\",\"city\":\"" + gSet.cityName +
                      "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + "}";
       settingsUnlock();
@@ -680,6 +700,7 @@ void monitorBegin() {
   usbBuf = (char*)malloc(USB_BUF);
   loadForecast();
   xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 2, nullptr, 1);
+  xTaskCreatePinnedToCore(weatherTask, "weather", 16384, nullptr, 1, nullptr, 0);
 }
 
 void monitorWifiPoll() {

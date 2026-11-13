@@ -38,7 +38,7 @@ import psutil
 import requests
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -538,6 +538,8 @@ class Agent:
         self.wifi = WifiReader()
         self.usb = UsbLink(self, args.usb_port)
         self.forecast: dict = {}   # почасовой прогноз для заставки экрана
+        self.forecast_source = ""
+        self.forecast_error = ""
         self._wx_wake = threading.Event()
         self.city_cfg = {"city": "", "gm": "", "mail": ""}
         self._load_city_cfg()
@@ -589,6 +591,9 @@ class Agent:
                     "gm": str(d["gm"])[:64],
                     "mail": str(d.get("mail") or "")[:64],
                 }
+                if isinstance(d.get("lat"), (int, float)) and isinstance(d.get("lon"), (int, float)):
+                    self.city_cfg["lat"] = float(d["lat"])
+                    self.city_cfg["lon"] = float(d["lon"])
         except Exception:
             pass
 
@@ -698,7 +703,7 @@ class Agent:
                 if not mail:
                     m = re.match(r"weather-(.+)-\d+$", gm)
                     mail = m.group(1).replace("-", "_") if m else ""
-                self.city_cfg = {"city": cname, "gm": gm, "mail": mail}
+                self.city_cfg = {"city": cname, "gm": gm, "mail": mail}   # координаты найдутся заново
                 self._save_city_cfg()
                 cmd["city"] = cname
                 cmd["gm"] = gm
@@ -746,14 +751,40 @@ class Agent:
             return 0
         return 2
 
-    def _fetch_ru_forecast(self) -> list[list[int]]:
-        """Загружает прогноз с российских серверов (Gismeteo.ru -> Pogoda.Mail.ru)."""
+    def _fetch_ru_current(self) -> list[int] | None:
+        """Текущая погода с Gismeteo, резерв — Погода Mail.ru: [темп, ощущается, ветер, код]."""
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0"}
-        rows: list[list[int]] = []
         gm_slug = self.city_cfg.get("gm") or ""
         mail_slug = self.city_cfg.get("mail") or ""
-        if not gm_slug and not mail_slug:
-            return []
+        if gm_slug:
+            try:
+                r_now = requests.get(f"https://www.gismeteo.ru/{gm_slug}/now/", headers=headers, timeout=8)
+                if r_now.status_code == 200:
+                    t_html = r_now.text
+                    m_t = re.search(r'now-weather[^>]*>\s*<temperature-value value="(-?\d+)"', t_html)
+                    m_f = re.search(r'now-feel[^>]*>.*?<temperature-value value="(-?\d+)"', t_html, re.S)
+                    m_d = re.search(r'now-desc[^>]*>\s*([^<]+)', t_html)
+                    m_w = re.search(r'now-info-item[^>]*>.*?Ветер.*?<speed-value value="(\d+)"', t_html, re.S)
+                    if m_t:
+                        cur_t = int(m_t.group(1))
+                        return [cur_t, int(m_f.group(1)) if m_f else cur_t, int(m_w.group(1)) if m_w else 0,
+                                self._ru_weather_code(m_d.group(1) if m_d else "")]
+            except Exception:
+                pass
+        if mail_slug:
+            try:
+                r_mail = requests.get(f"https://pogoda.mail.ru/prognoz/{mail_slug}/", headers=headers, timeout=8)
+                m = re.search(r"window\.__PRELOADED_STATE__PAGE\s*=\s*(\{.*?\});?\s*</script>", r_mail.text, re.S)
+                if m:
+                    cur = json.loads(m.group(1)).get("data", {}).get("current") or {}
+                    if "temperature" in cur:
+                        t0_v = int(float(str(cur.get("temperature", 0)).replace("+", "")))
+                        return [t0_v, int(float(str(cur.get("tempe_comf", t0_v)).replace("+", ""))),
+                                int(float(str(cur.get("wind_speed", 0)))),
+                                self._ru_weather_code(str(cur.get("description") or cur.get("descr") or ""))]
+            except Exception:
+                pass
+        return None
 
         # 1. Gismeteo (текущая погода + прогноз по 3-часовым шагам, развёрнутый по часам)
         try:
@@ -824,15 +855,75 @@ class Agent:
 
         return []
 
+    def _city_coords(self) -> tuple[float, float] | None:
+        """Координаты выбранного города (геокодер Open-Meteo), кэшируются в city.json."""
+        cfg = self.city_cfg
+        if isinstance(cfg.get("lat"), float) and isinstance(cfg.get("lon"), float):
+            return cfg["lat"], cfg["lon"]
+        if self.args.lat or self.args.lon:
+            return self.args.lat, self.args.lon
+        name = str(cfg.get("city") or "").strip()
+        if not name:
+            return None
+        r = requests.get("https://geocoding-api.open-meteo.com/v1/search",
+                         params={"name": name, "count": 10, "language": "ru", "format": "json"}, timeout=8)
+        res = [x for x in (r.json().get("results") or []) if x.get("country_code") == "RU"]
+        if not res:
+            return None
+        # одноимённых городов бывает несколько — берём самый крупный
+        best = max(res, key=lambda x: x.get("population") or 0)
+        cfg["lat"], cfg["lon"] = float(best["latitude"]), float(best["longitude"])
+        self._save_city_cfg()
+        return cfg["lat"], cfg["lon"]
+
+    def _fetch_openmeteo(self, lat: float, lon: float) -> tuple[int, list[list[int]]]:
+        """Почасовой прогноз на двое суток. Каждая строка привязана к своему часу
+        (время в ответе — Unix), поэтому сдвига по времени быть не может."""
+        r = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": lat, "longitude": lon,
+            "hourly": "temperature_2m,apparent_temperature,wind_speed_10m,weather_code",
+            "wind_speed_unit": "ms", "forecast_days": 3, "timeformat": "unixtime", "timezone": "GMT",
+        }, timeout=10)
+        h = r.json()["hourly"]
+        now = time.time()
+        t0, rows = 0, []
+        for i, t in enumerate(h["time"]):
+            if t + 3600 <= now or len(rows) >= 48:
+                continue
+            vals = (h["temperature_2m"][i], h["apparent_temperature"][i], h["wind_speed_10m"][i], h["weather_code"][i])
+            if any(v is None for v in vals):
+                break   # дальше прогноза нет — не придумываем
+            if not rows:
+                t0 = int(t)
+            rows.append([round(vals[0]), round(vals[1]), round(vals[2]), int(vals[3])])
+        return t0, rows
+
     def _forecast_loop(self) -> None:
-        """Раз в полчаса берёт прогноз с российских серверов (Gismeteo / Погода Mail.ru)
-        и отдаёт экрану как кэш на двое суток."""
+        """Раз в полчаса берёт прогноз и отдаёт экрану: когда ПК выключен, экран
+        сам показывает погоду на текущий час.
+
+        Основной источник — Open-Meteo: почасовой ряд с точным временем каждой строки.
+        Если он недоступен, с Gismeteo / Погоды Mail.ru берётся только текущая погода,
+        одной строкой на текущий час: растягивать её на двое суток нельзя — экран
+        выдавал бы её за прогноз."""
         while True:
             delay = 1800
             try:
-                rows = self._fetch_ru_forecast()
+                rows, t0 = [], 0
+                try:
+                    coords = self._city_coords()
+                    if coords:
+                        t0, rows = self._fetch_openmeteo(*coords)
+                        self.forecast_source = "Open-Meteo"
+                except Exception as exc:
+                    self.forecast_error = f"open-meteo: {exc}"[:80]
+                if not rows:
+                    cur = self._fetch_ru_current()
+                    if cur:
+                        t0, rows = int(time.time() // 3600 * 3600), [cur]
+                        self.forecast_source = "Gismeteo/Mail.ru (только сейчас)"
+                        delay = 600
                 if rows:
-                    t0 = int(time.time() // 3600 * 3600)
                     self.forecast = {"wx": 1, "t0": t0, "h": rows}
                 else:
                     delay = 300
@@ -933,8 +1024,11 @@ class Agent:
         cpu_other: list[float] = []
         gpu_values: list[float] = []
         try:
+            # _HWiNFO_SENSORS_SHARED_MEM2 (pack 1): сигнатура, версия, ревизия,
+            # время опроса (int64), затем смещение/размер/число для датчиков
+            # и то же для показаний — всего 44 байта.
             hdr = ctypes.string_at(ptr, 44)
-            magic, _, _, _, _, _, off_r, sz_r, num_r = struct.unpack("<4sIIqIIIII", hdr)
+            magic, _, _, _, _, _, _, off_r, sz_r, num_r = struct.unpack("<4sIIqIIIIII", hdr)
             if magic == b"HWiS" and 0 < num_r < 2000 and 64 <= sz_r <= 2048:
                 raw = ctypes.string_at(ptr + off_r, sz_r * num_r)
                 for i in range(num_r):
@@ -1695,7 +1789,7 @@ def make_handler(agent: Agent):
                 with agent.lock:
                     self._json({"ok": True, "speed": dict(agent.speed)})
             elif path == "/api/health":
-                self._json({"ok": True, "name": APP_NAME, "version": VERSION, "time": int(time.time()), "app": bool(AUTOSTART_CMD), "usb": agent.usb.status(), "forecastHours": len(agent.forecast.get("h", []))})
+                self._json({"ok": True, "name": APP_NAME, "version": VERSION, "time": int(time.time()), "app": bool(AUTOSTART_CMD), "usb": agent.usb.status(), "forecastHours": len(agent.forecast.get("h", [])), "forecastSource": agent.forecast_source, "forecastError": agent.forecast_error, "cpuTemp": agent._lhm.get("cpu", -1.0)})
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
 

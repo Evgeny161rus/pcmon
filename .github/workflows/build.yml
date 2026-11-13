@@ -1,0 +1,93 @@
+name: Build PC Monitor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio esptool
+      - name: Build firmware
+        env:
+          # build_dir в platformio.ini указывает на диск C: — в CI собираем рядом
+          PLATFORMIO_BUILD_DIR: ${{ github.workspace }}/.pio/build
+        run: pio run -e pcmon
+      - name: Make single flashable image
+        run: |
+          B=.pio/build/pcmon
+          BOOT_APP0=$(find ~/.platformio/packages -name boot_app0.bin | head -1)
+          mkdir -p out
+          python -m esptool --chip esp32s3 merge_bin -o out/pcmon-firmware-full.bin \
+            --flash_mode keep --flash_freq keep --flash_size keep \
+            0x0 $B/bootloader.bin 0x8000 $B/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/firmware.bin
+          cp $B/firmware.bin out/pcmon-firmware-app.bin
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCMonitor-firmware
+          path: out/*.bin
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build EXE and portable folder
+        shell: cmd
+        run: build_exe.bat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCMonitor-Windows
+          path: |
+            dist/PCMonitor.exe
+            dist/PCMonitor-folder.zip
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [firmware, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        run: cd dist && sha256sum PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
+      - name: Update latest download
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PC Monitor — последняя сборка
+          body: |
+            **PCMonitor.exe** — программа для Windows, Python не нужен. Если Microsoft Defender подозрительно реагирует на однофайловую сборку, скачайте **PCMonitor-folder.zip**, распакуйте папку целиком и запустите PCMonitor.exe внутри.
+
+            **pcmon-firmware-full.bin** — прошивка платы целиком, пишется с адреса 0x0 (например, `esptool.py --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin` или любым веб-прошивальщиком ESP32).
+            **pcmon-firmware-app.bin** — только приложение, с адреса 0x10000: для обновления, когда загрузчик уже стоит.
+
+            Контрольные суммы — в SHA256.txt. Сборка исходников: ${{ github.sha }}.
+          make_latest: true
+          overwrite_files: true
+          files: |
+            dist/PCMonitor.exe
+            dist/PCMonitor-folder.zip
+            dist/pcmon-firmware-full.bin
+            dist/pcmon-firmware-app.bin
+            dist/SHA256.txt
