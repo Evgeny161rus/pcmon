@@ -198,6 +198,7 @@ static void handleSet() {
                    server.hasArg("mail") ? server.arg("mail").c_str() : nullptr);
   }
   if (server.hasArg("idle")) uiForceIdle(server.arg("idle").toInt() != 0);
+  if (server.hasArg("fc")) uiShowForecast(server.arg("fc").toInt() != 0);
   if (server.hasArg("skin")) uiSetSkin(server.arg("skin").toInt());
   if (server.hasArg("menu")) uiShowMenu(server.arg("menu").toInt());
   handleStatus();

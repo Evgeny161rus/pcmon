@@ -100,8 +100,13 @@ struct State {
   };
   WxPal wxPal = {0xFFC83D, 0xD5DCE6, 0x4CC9F0, 0x000000};
   WxView wx;
-  WxView fc[4];
-  int fcN = 0, fcStep = 3;
+  WxView fc[8];
+  lv_obj_t* fcWind[8];
+  int fcN = 0, fcStep = 3, fcFirst = 3;
+  // экран прогноза
+  lv_obj_t* fcChart;
+  lv_chart_series_t* fcSer;
+  lv_obj_t *fcMin, *fcMax, *fcNow;
   bool wxLong = false;   // описание с «ощущается»
 };
 
@@ -429,10 +434,40 @@ static void wxNow(lv_obj_t* p, int x, int y, int s, lv_obj_t* temp, lv_obj_t* de
   S.wx.desc = desc;
 }
 
+// Значок и температура (с описанием под ней), отцентрованные в прямоугольнике.
+static lv_obj_t* wxGroup(lv_obj_t* p, int x, int y, int w, int h, int s, const lv_font_t* ft, uint32_t ct,
+                         const lv_font_t* fd, uint32_t cd, int gap = 6, int rowPad = -2) {
+  lv_obj_t* g = lv_obj_create(p);
+  lv_obj_remove_style_all(g);
+  lv_obj_set_pos(g, x, y);
+  lv_obj_set_size(g, w, h);
+  lv_obj_remove_flag(g, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(g, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_flex_flow(g, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(g, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(g, gap, 0);
+  lv_obj_t* icon = wxIconBox(g, 0, 0, s);
+  lv_obj_t* col = lv_obj_create(g);
+  lv_obj_remove_style_all(col);
+  lv_obj_set_size(col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+  lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(col, rowPad, 0);
+  lv_obj_t* t = lab(col, 0, 0, 0, "", ft, ct);
+  lv_obj_t* d = fd ? lab(col, 0, 0, 0, "", fd, cd) : nullptr;
+  S.wx.icon = icon;
+  S.wx.s = s;
+  S.wx.temp = t;
+  S.wx.desc = d;
+  return g;
+}
+
 // Ячейка прогноза: время сверху, значок, температура снизу.
 static void wxSlot(lv_obj_t* p, int x, int y, int w, int s, const lv_font_t* ft, const lv_font_t* fv, uint32_t tc,
                    uint32_t vc) {
-  if (S.fcN >= 4) return;
+  if (S.fcN >= 8) return;
   State::WxView& v = S.fc[S.fcN++];
   v.time = lab(p, x, y, w, "", ft, tc, LV_TEXT_ALIGN_CENTER);
   int th = lv_font_get_line_height(ft);
@@ -467,7 +502,7 @@ static void updWeather() {
     else setText(S.wx.desc, weatherText(w.code));
   }
   for (int i = 0; i < S.fcN; i++) {
-    int ahead = (i + 1) * S.fcStep;
+    int ahead = S.fcFirst + i * S.fcStep;
     Weather f;
     bool ok = monitorForecast(ahead, f);
     int hh = (tm.tm_hour + ahead) % 24;
@@ -739,8 +774,7 @@ static void buildRetro(lv_obj_t* scr) {
   lv_obj_set_style_bg_grad_color(wp, C(0xE6D19C), 0);
   lv_obj_set_style_bg_grad_dir(wp, LV_GRAD_DIR_VER, 0);
   wxPal(0xD9480F, 0x6B6150, 0x1C6E8C, 0xEDDBB0);
-  wxNow(wp, 5, 4, 28, lab(wp, 36, 1, 60, "", f20b, 0x1C1A17, LV_TEXT_ALIGN_RIGHT),
-        lab(wp, 30, 21, 66, "", f8, 0x4A4030, LV_TEXT_ALIGN_RIGHT));
+  wxGroup(wp, 0, 0, 100, 34, 28, f20b, 0x1C1A17, f8, 0x4A4030, 6, -6);
 
   lv_obj_t* rp = box(scr, 120, 194, 80, 38, PANEL, 4, EDGE, 2);
   lab(rp, 6, 5, 20, "RX", f8, DIM);
@@ -982,8 +1016,7 @@ static void buildTiles(lv_obj_t* scr) {
   S.host = lab(scr, 104, 214, 96, "", f9, 0x7A828E);
   lv_obj_t* wt = box(scr, 196, 190, 116, 44, 0x161A22, 12);
   wxPal(0xFFC83D, 0xE6ECFF, 0x5A8DF7, 0x161A22);
-  wxNow(wt, 8, 5, 34, lab(wt, 46, 2, 62, "", f20b, 0xFFFFFF, LV_TEXT_ALIGN_RIGHT),
-        lab(wt, 40, 26, 68, "", f8, 0xBDC4CE, LV_TEXT_ALIGN_RIGHT));
+  wxGroup(wt, 0, 0, 116, 44, 32, f20b, 0xFFFFFF, f8, 0xBDC4CE, 8, -5);
 }
 
 static void updTiles(const PcStats& pc) {
@@ -1331,8 +1364,7 @@ static void buildHud(lv_obj_t* scr) {
   hudCorner(scr, 8, 234, 1, -1, EDGE);
   hudCorner(scr, 310, 234, -1, -1, EDGE);
   wxPal(0xFFB454, 0xC9D1DC, 0x27D9F2, 0x0B0D12);
-  wxNow(scr, 16, 178, 38, lab(scr, 58, 174, 92, "", f24, 0xF4F7FC),
-        lab(scr, 58, 204, 96, "", f8, MUT));
+  wxGroup(scr, 10, 170, 146, 62, 38, f24, 0xF4F7FC, f8, MUT, 8, -3);
   box(scr, 156, 176, 1, 50, 0x27303D);
   S.fcStep = 3;
   for (int i = 0; i < 3; i++) wxSlot(scr, 162 + i * 49, 174, 48, 22, f8, f9b, MUT, 0xF4F7FC);
@@ -1490,6 +1522,115 @@ static void updIdle(const WifiInfo& w) {
   }
 }
 
+// ------------------------------------------------------------------ прогноз
+// Открывается касанием погоды: 8 ячеек через 3 часа и график температуры на 36 часов.
+static const int FCAST = 101;
+
+void skinBuildForecast(lv_obj_t* scr, int baseSkin) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = FCAST;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+  settingsLock();
+  String city = gSet.cityName;
+  settingsUnlock();
+  char t[64];
+  snprintf(t, sizeof(t), "Прогноз · %s", city.length() ? city.c_str() : "погода");
+  lab(scr, 12, 7, 200, t, f14b, p.fg);
+  S.fcNow = lab(scr, 180, 9, 128, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  box(scr, 12, 30, 296, 1, p.line);
+
+  wxPal(p.acc, mix(p.fg, p.mut, 110), p.bg == 0xF4F2EE ? 0x2F6FD6 : mix(0x4CC9F0, p.acc, 210), p.bg);
+  S.fcStep = 3;
+  S.fcFirst = 0;
+  for (int i = 0; i < 8; i++) {
+    int x = i * 40;
+    if (i) box(scr, x, 40, 1, 86, p.line);
+    wxSlot(scr, x, 36, 40, 24, f9, f14b, p.mut, p.fg);
+    S.fcWind[i] = lab(scr, x, 102, 40, "", f8, p.mut, LV_TEXT_ALIGN_CENTER);
+  }
+  box(scr, 12, 130, 296, 1, p.line);
+  lab(scr, 12, 136, 160, "Температура на 36 часов", f9, p.mut);
+  S.fcMax = lab(scr, 200, 136, 108, "", f9b, p.acc, LV_TEXT_ALIGN_RIGHT);
+
+  lv_obj_t* ch = lv_chart_create(scr);
+  lv_obj_remove_style_all(ch);
+  lv_obj_set_pos(ch, 12, 156);
+  lv_obj_set_size(ch, 296, 62);
+  lv_chart_set_type(ch, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(ch, 36);
+  lv_chart_set_div_line_count(ch, 3, 0);
+  lv_obj_set_style_line_color(ch, C(p.line), LV_PART_MAIN);
+  lv_obj_set_style_line_width(ch, 1, LV_PART_MAIN);
+  lv_obj_set_style_line_width(ch, 2, LV_PART_ITEMS);
+  lv_obj_set_style_size(ch, 0, 0, LV_PART_INDICATOR);
+  lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+  S.fcSer = lv_chart_add_series(ch, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_all_values(ch, S.fcSer, LV_CHART_POINT_NONE);
+  S.fcChart = ch;
+  S.fcMin = lab(scr, 12, 222, 296, "", f8, p.mut);
+}
+
+static void updForecast() {
+  updWeather();
+  Weather now = monitorWeather();
+  if (now.ok) setFmt(S.fcNow, "сейчас %+.0f° · %s", now.temp, weatherText(now.code));
+  else setText(S.fcNow, "");
+  for (int i = 0; i < S.fcN; i++) {
+    Weather f;
+    if (monitorForecast(S.fcFirst + i * S.fcStep, f)) setFmt(S.fcWind[i], "%.0f м/с", f.wind);
+    else setText(S.fcWind[i], "");
+  }
+  int mn = 999, mx = -999, n = 0, wmax = 0;
+  for (int h = 0; h < 36; h++) {
+    Weather f;
+    if (!monitorForecast(h, f)) {
+      lv_chart_set_series_value_by_id(S.fcChart, S.fcSer, h, LV_CHART_POINT_NONE);
+      continue;
+    }
+    int v = (int)lroundf(f.temp);
+    mn = min(mn, v);
+    mx = max(mx, v);
+    wmax = max(wmax, (int)lroundf(f.wind));
+    n++;
+    lv_chart_set_series_value_by_id(S.fcChart, S.fcSer, h, v);
+  }
+  if (n) {
+    lv_chart_set_axis_range(S.fcChart, LV_CHART_AXIS_PRIMARY_Y, mn - 1, mx + 1);
+    setFmt(S.fcMax, "%+d° … %+d°", mn, mx);
+    setFmt(S.fcMin, "ветер до %d м/с · Gismeteo", wmax);
+  } else {
+    setText(S.fcMax, "");
+    setText(S.fcMin, "прогноз приходит с ПК, когда он включён");
+  }
+  lv_chart_refresh(S.fcChart);
+}
+
+// Попадает ли касание в блок погоды текущего скина (значок, температура, прогноз).
+bool skinWeatherHit(int x, int y) {
+  lv_obj_t* objs[3 + 8 * 2];
+  int n = 0;
+  objs[n++] = S.wx.icon;
+  objs[n++] = S.wx.temp;
+  objs[n++] = S.wx.desc;
+  for (int i = 0; i < S.fcN; i++) {
+    objs[n++] = S.fc[i].icon;
+    objs[n++] = S.fc[i].temp;
+  }
+  for (int i = 0; i < n; i++) {
+    if (!objs[i]) continue;
+    lv_area_t a;
+    lv_obj_get_coords(objs[i], &a);
+    if (lv_area_get_width(&a) <= 1) continue;
+    if (x >= a.x1 - 12 && x <= a.x2 + 12 && y >= a.y1 - 12 && y <= a.y2 + 12) return true;
+  }
+  return false;
+}
+
 // ------------------------------------------------------------------ общее
 void skinBuild(lv_obj_t* scr, int idx) {
   fonts();
@@ -1518,6 +1659,10 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
   if (S.idx < 0) return;
   if (S.idx == IDLE) {
     updIdle(w);
+    return;
+  }
+  if (S.idx == FCAST) {
+    updForecast();
     return;
   }
 
