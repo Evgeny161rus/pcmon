@@ -695,6 +695,7 @@ class UsbLink(threading.Thread):
             last_wx, last_wx_t0 = 0.0, None
             last_hist = 0.0
             apps_ver = None
+            apps_sent = 0.0
             try:
                 while True:
                     now = time.time()
@@ -706,10 +707,27 @@ class UsbLink(threading.Thread):
                         line = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
                         s.write(line.encode("utf-8"))
                         self.sent += 1
-                        if apps_ver != self.agent.launcher.ver:
-                            apps_ver = self.agent.launcher.ver
-                            for m in self.agent.launcher.board_messages():
-                                s.write((json.dumps(m, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
+                        # плитки быстрого запуска: плата в приветствии сообщает версию списка (av)
+                        # и какие иконки уже получила (im); недостающее досылаем
+                        lz = self.agent.launcher
+                        h = self.hello
+                        if now - apps_sent > 8 and (h.get("av") != lz.ver or apps_ver != lz.ver or
+                                                    (int(h.get("im") or 0) & ((1 << lz.count) - 1)) != (1 << lz.count) - 1):
+                            apps_sent = now
+                            full = h.get("av") != lz.ver or apps_ver != lz.ver
+                            apps_ver = lz.ver
+                            have = 0 if full else int(h.get("im") or 0)
+                            for m in lz.board_messages():
+                                if "icon" in m and have >> m["icon"] & 1:
+                                    continue
+                                if "apps" in m and not full:
+                                    continue
+                                # иконка ~9 КБ: порциями с паузами, приёмный буфер платы всего 8 КБ
+                                raw = (json.dumps(m, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                                for k in range(0, len(raw), 1024):
+                                    s.write(raw[k:k + 1024])
+                                    s.flush()
+                                    time.sleep(0.03)
                         if now - last_hist > 300:
                             last_hist = now
                             hs = self.agent.history.summary()

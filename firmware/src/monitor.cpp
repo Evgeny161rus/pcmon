@@ -463,6 +463,14 @@ static void handleIcon(JsonDocument& doc) {
   xSemaphoreGive(statsMux);
 }
 
+// какие иконки уже есть (бит i — плитка i); агент досылает недостающие
+static uint32_t appMask() {
+  uint32_t m = 0;
+  for (int i = 0; i < APP_MAX; i++)
+    if (apps[i].icon) m |= 1u << i;
+  return m;
+}
+
 int monitorApps(AppTile* out, uint32_t* rev) {
   if (!statsMux) return 0;
   xSemaphoreTake(statsMux, portMAX_DELAY);
@@ -844,7 +852,7 @@ static void netTask(void*) {
       settingsLock();
       String hello = "{\"hello\":1,\"fw\":\"1.6.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
                      ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"city\":\"" + gSet.cityName +
-                     "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + "}";
+                     "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + ",\"av\":" + String(appVer) + ",\"im\":" + String(appMask()) + "}";
       settingsUnlock();
       usbSend(hello);
     }

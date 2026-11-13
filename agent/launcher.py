@@ -219,7 +219,7 @@ def item_image(item: dict):
                     path = icon or t or path
                 img = _extract(path, idx, 64) or _shell_icon(target)
             elif kind == "folder":
-                img = _shell_icon(target)
+                img = _extract(os.path.join(SYS32, "imageres.dll"), 3, 64) or _shell_icon(target)
         except Exception:
             img = None
     if img is None:
@@ -233,7 +233,8 @@ def to_lvgl(img) -> bytes:
 
     im = img.convert("RGBA")
     if im.size != (ICON, ICON):
-        im.thumbnail((ICON, ICON), Image.LANCZOS)
+        k = min(ICON / im.width, ICON / im.height)   # и уменьшаем, и увеличиваем мелкие
+        im = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
         canvas = Image.new("RGBA", (ICON, ICON), (0, 0, 0, 0))
         canvas.paste(im, ((ICON - im.width) // 2, (ICON - im.height) // 2), im)
         im = canvas
