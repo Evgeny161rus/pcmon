@@ -11,6 +11,7 @@
 //   9 «Шина»        — схема узлов вокруг центрального CPU
 //  10 «HUD»         — сегментированные шкалы телеметрии
 //  11 «Сканлайн»    — история CPU и системные показатели
+//  12 «Звук»        — спектр с микрофона и шумомер
 #include "skins.h"
 
 #include <ctype.h>
@@ -19,6 +20,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "mic.h"
 #include "settings.h"
 
 #include "fonts_px.h"
@@ -29,8 +31,9 @@ static const char* NAMES[] = {
     "Приборы", "Неон", "Минимализм", "Ретро-радио",
     "Часы", "Терминал", "Плитки", "Лампы",
     "Импульс", "Шина", "HUD", "Сканлайн",
+    "Звук",
 };
-static const int SKIN_N = 12;
+static const int SKIN_N = 13;
 
 int skinCount() { return SKIN_N; }
 const char* skinName(int idx) { return NAMES[constrain(idx, 0, SKIN_N - 1)]; }
@@ -107,6 +110,28 @@ struct State {
   lv_obj_t* fcChart;
   lv_chart_series_t* fcSer;
   lv_obj_t *fcMin, *fcMax, *fcNow;
+  // медиапанель
+  lv_obj_t *mApp, *mTitle, *mArtist, *mCover, *mCoverPh, *mPlayIcon, *mPlayBtn, *mVolLbl, *mMuteIcon;
+  uint32_t mCoverId = 0xFFFFFFFF;
+  Bar mVol;
+  void (*mKey)(int) = nullptr;
+  uint32_t mAcc = 0, mFg = 0;
+  // отчёт за 12 часов
+  lv_obj_t *hLoad, *hTemp, *hRange, *hT[4], *hSum[4], *hSumV[3], *hEmpty;
+  lv_chart_series_t *hCpu, *hGpu, *hCt, *hGt;
+  // «Звук»
+  lv_obj_t *sBar[MIC_BANDS], *sCap[MIC_BANDS], *sDb, *sCat, *sStat, *sTone, *sHist, *sOff;
+  lv_chart_series_t* sHistSer;
+  lv_timer_t* sTimer = nullptr;
+  float sVal[MIC_BANDS], sPeak[MIC_BANDS];
+  uint32_t sSeq = 0;
+  // запуск
+  lv_obj_t *lTile[APP_MAX], *lImg[APP_MAX], *lName[APP_MAX], *lLetter[APP_MAX], *lHint;
+  int lN = 0;
+  uint32_t lRev = 0xFFFFFFFF;
+  int lArmed = -1, lLaunched = -1;
+  uint32_t lArmedAt = 0, lLaunchedAt = 0;
+  uint32_t lAcc = 0, lCard = 0, lLine = 0, lFg = 0;
   bool wxLong = false;   // описание с «ощущается»
 };
 
@@ -116,10 +141,15 @@ static int histN = 0;
 static uint32_t histSeen = 0;
 
 void skinClear() {
+  if (S.sTimer) {
+    lv_timer_delete(S.sTimer);
+    micSetActive(false);
+  }
   S = State();
 }
 
 static inline lv_color_t C(uint32_t v) { return lv_color_hex(v); }
+static uint32_t mix(uint32_t a, uint32_t b, uint8_t k);
 
 // ------------------------------------------------------------------ кирпичики
 static lv_obj_t* box(lv_obj_t* p, int x, int y, int w, int h, uint32_t bg, int r = 0, uint32_t border = 0, int bw = 0) {
@@ -1453,6 +1483,98 @@ static void updScanline(const PcStats& pc) {
   feedChart();
 }
 
+// ------------------------------------------------------------------ 12. Звук
+// Спектр с микрофона на 32 полосы с падающими пиками и шумомер.
+static const int SND_X = 14, SND_Y = 36, SND_H = 128, SND_W = 9;
+
+static void sndFrame(lv_timer_t*) {
+  static MicData m;
+  bool ok = micGet(m);
+  if (!ok) {
+    setText(S.sOff, "Микрофон включается…");
+    return;
+  }
+  setText(S.sOff, "");
+  for (int i = 0; i < MIC_BANDS; i++) {
+    float v = m.bands[i];
+    S.sVal[i] = v > S.sVal[i] ? v : S.sVal[i] * 0.82f + v * 0.18f;
+    if (S.sVal[i] > S.sPeak[i]) S.sPeak[i] = S.sVal[i];
+    else S.sPeak[i] = fmaxf(0.0f, S.sPeak[i] - 1.2f);
+    int h = max(2, (int)(S.sVal[i] * SND_H / 100));
+    lv_obj_set_y(S.sBar[i], SND_Y + SND_H - h);
+    lv_obj_set_height(S.sBar[i], h);
+    int py = SND_Y + SND_H - (int)(S.sPeak[i] * SND_H / 100) - 4;
+    lv_obj_set_y(S.sCap[i], min(py, SND_Y + SND_H - 4));
+  }
+  if (m.seq == S.sSeq) return;
+  S.sSeq = m.seq;
+  static uint32_t lastText = 0;
+  if (millis() - lastText < 250) return;
+  lastText = millis();
+  setFmt(S.sDb, "%.0f", m.db);
+  const char* cat = m.db < 35 ? "тишина" : m.db < 50 ? "тихо" : m.db < 65 ? "разговор" : m.db < 80 ? "громко" : "очень громко";
+  uint32_t cc = m.db < 50 ? 0x42E6B5 : m.db < 65 ? 0x22E3FF : m.db < 80 ? 0xFFB454 : 0xFF4E6D;
+  setText(S.sCat, cat);
+  lv_obj_set_style_text_color(S.sCat, C(cc), 0);
+  setFmt(S.sStat, "макс %.0f · сред %.0f", m.peak, m.avg);
+  if (m.toneHz > 0) {
+    char note[8];
+    micNoteName(m.toneHz, note, sizeof(note));
+    setFmt(S.sTone, "тон %.0f Гц · %s", m.toneHz, note);
+  } else {
+    setText(S.sTone, "");
+  }
+  for (int i = 0; i < MIC_HIST; i++)
+    lv_chart_set_series_value_by_id(S.sHist, S.sHistSer, i, m.hist[i] ? m.hist[i] : LV_CHART_POINT_NONE);
+  lv_chart_refresh(S.sHist);
+}
+
+static void buildSound(lv_obj_t* scr) {
+  const uint32_t BG = 0x06070C, MUT = 0x8C92B0, LINE = 0x1C2030;
+  lv_obj_set_style_bg_color(scr, C(BG), 0);
+  lab(scr, 12, 7, 80, "ЗВУК", f14b, 0xF2F4FF);
+  S.sTone = lab(scr, 72, 9, 150, "", f9b, 0xFFE14D, LV_TEXT_ALIGN_CENTER);
+  S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xF2F4FF, LV_TEXT_ALIGN_RIGHT);
+  box(scr, 12, 28, 296, 1, LINE);
+  // сетка и шкала частот
+  for (int k = 1; k < 4; k++) box(scr, 12, SND_Y + k * SND_H / 4, 296, 1, 0x10131C);
+  static const char* fl[4] = {"60", "500", "3к", "16к Гц"};
+  static const int fx[4] = {12, 104, 200, 248};
+  for (int k = 0; k < 4; k++) lab(scr, fx[k], SND_Y + SND_H + 2, k == 3 ? 60 : 40, fl[k], f8, MUT, k == 3 ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT);
+  for (int i = 0; i < MIC_BANDS; i++) {
+    uint8_t k = (uint8_t)(i * 255 / (MIC_BANDS - 1));
+    uint32_t c = mix(0xFF4DF5, 0x22E3FF, k);
+    lv_obj_t* b = box(scr, SND_X + i * SND_W, SND_Y + SND_H - 2, SND_W - 2, 2, c, 1);
+    lv_obj_set_style_bg_grad_color(b, C(mix(c, BG, 150)), 0);
+    lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_VER, 0);
+    S.sBar[i] = b;
+    S.sCap[i] = box(scr, SND_X + i * SND_W, SND_Y + SND_H - 4, SND_W - 2, 2, 0xF2F4FF, 1);
+    S.sVal[i] = S.sPeak[i] = 0;
+  }
+  box(scr, 12, 178, 296, 1, LINE);
+  // шумомер
+  S.sDb = lab(scr, 12, 182, 70, "—", f30b, 0xF2F4FF, LV_TEXT_ALIGN_RIGHT);
+  lab(scr, 86, 196, 30, "дБ", f14b, MUT);
+  S.sCat = lab(scr, 116, 186, 92, "", f14b, 0x42E6B5);
+  S.sStat = lab(scr, 116, 208, 100, "", f8, MUT);
+  lv_obj_t* ch = lv_chart_create(scr);
+  lv_obj_remove_style_all(ch);
+  lv_obj_set_pos(ch, 218, 182);
+  lv_obj_set_size(ch, 90, 40);
+  lv_chart_set_type(ch, LV_CHART_TYPE_BAR);
+  lv_chart_set_point_count(ch, MIC_HIST);
+  lv_chart_set_axis_range(ch, LV_CHART_AXIS_PRIMARY_Y, 20, 100);
+  lv_obj_set_style_pad_column(ch, 0, 0);
+  lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+  S.sHistSer = lv_chart_add_series(ch, C(0x22E3FF), LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_all_values(ch, S.sHistSer, LV_CHART_POINT_NONE);
+  S.sHist = ch;
+  lab(scr, 218, 224, 90, "за минуту", f8, MUT, LV_TEXT_ALIGN_RIGHT);
+  S.sOff = lab(scr, 12, 90, 296, "", f14b, MUT, LV_TEXT_ALIGN_CENTER);
+  micSetActive(true);
+  S.sTimer = lv_timer_create(sndFrame, 40, nullptr);
+}
+
 // ------------------------------------------------------------------ заставка
 static const int IDLE = 100;
 struct IdlePal {
@@ -1471,6 +1593,7 @@ static const IdlePal IDLE_PAL[SKIN_N] = {
     {0x070B16, 0xF0F5FF, 0x8A98B8, 0x8B6CFF, 0x202B4A},
     {0x0B0D12, 0xF4F7FC, 0x8995A7, 0x42E6B5, 0x27303D},
     {0x080D12, 0xE9F6FF, 0x8297A5, 0xFF4E9B, 0x1D3440},
+    {0x06070C, 0xF2F4FF, 0x8C92B0, 0x22E3FF, 0x1C2030},
 };
 
 static uint32_t mix(uint32_t a, uint32_t b, uint8_t k) {
@@ -1616,6 +1739,398 @@ static void updForecast() {
   lv_chart_refresh(S.fcChart);
 }
 
+// ------------------------------------------------------------------ медиапанель
+// Открывается свайпом вверх/вниз по главному экрану. Кнопки зовут onKey:
+// 0/1/2 — пред./плей-пауза/след., 3/4/5 — громкость −/выкл./+, 9 — закрыть.
+static const int MEDIA = 102;
+
+static void mediaBtnCb(lv_event_t* e) {
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  if (S.mKey) S.mKey(k);
+}
+
+static lv_obj_t* mediaBtn(lv_obj_t* scr, int x, int y, int w, int h, uint32_t bg, uint32_t border, int key,
+                          const char* sym, const lv_font_t* f, uint32_t fc) {
+  lv_obj_t* b = box(scr, x, y, w, h, bg, h >= 60 ? LV_RADIUS_CIRCLE : 10, border, border ? 1 : 0);
+  lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_opa(b, LV_OPA_70, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_scale(b, 240, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_pivot_x(b, w / 2, 0);
+  lv_obj_set_style_transform_pivot_y(b, h / 2, 0);
+  lv_obj_add_event_cb(b, mediaBtnCb, LV_EVENT_CLICKED, (void*)(intptr_t)key);
+  lv_obj_set_ext_click_area(b, 8);   // промахнуться пальцем по краю труднее
+  lv_obj_t* l = lv_label_create(b);
+  lv_label_set_text(l, sym);
+  lv_obj_set_style_text_font(l, f, 0);
+  lv_obj_set_style_text_color(l, C(fc), 0);
+  lv_obj_center(l);
+  return l;
+}
+
+void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = MEDIA;
+  S.mKey = onKey;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  bool light = p.bg == 0xF4F2EE;
+  uint32_t card = mix(p.bg, p.fg, light ? 235 : 225);
+  S.mAcc = p.acc;
+  S.mFg = p.fg;
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+
+  mediaBtn(scr, 262, 2, 54, 40, card, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
+  // обложка 72×72 (или заглушка с нотой), справа — программа, трек, исполнитель
+  S.mCoverPh = box(scr, 14, 10, COVER_PX, COVER_PX, card, 12, p.line, 1);
+  lv_obj_t* note = lv_label_create(S.mCoverPh);
+  lv_label_set_text(note, LV_SYMBOL_AUDIO);
+  lv_obj_set_style_text_font(note, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(note, C(p.mut), 0);
+  lv_obj_center(note);
+  S.mCover = lv_image_create(scr);
+  lv_obj_set_pos(S.mCover, 14, 10);
+  lv_obj_set_style_radius(S.mCover, 12, 0);
+  lv_obj_set_style_clip_corner(S.mCover, true, 0);
+  lv_obj_add_flag(S.mCover, LV_OBJ_FLAG_HIDDEN);
+  S.mApp = lab(scr, 98, 10, 168, "", f9b, p.acc);
+  S.mTitle = lab(scr, 98, 34, 214, "", f14b, p.fg);
+  lv_label_set_long_mode(S.mTitle, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(S.mTitle, 40);
+  S.mArtist = lab(scr, 98, 72, 214, "", f9, p.mut);
+  lv_label_set_long_mode(S.mArtist, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(S.mArtist, 16);
+
+  mediaBtn(scr, 40, 118, 64, 64, card, p.line, 0, LV_SYMBOL_PREV, &lv_font_montserrat_20, p.fg);
+  S.mPlayIcon = mediaBtn(scr, 120, 110, 80, 80, p.acc, 0, 1, LV_SYMBOL_PLAY, &lv_font_montserrat_28, p.bg);
+  S.mPlayBtn = lv_obj_get_parent(S.mPlayIcon);
+  lv_obj_set_style_shadow_width(S.mPlayBtn, 18, 0);
+  lv_obj_set_style_shadow_color(S.mPlayBtn, C(p.acc), 0);
+  lv_obj_set_style_shadow_opa(S.mPlayBtn, LV_OPA_40, 0);
+  mediaBtn(scr, 216, 118, 64, 64, card, p.line, 2, LV_SYMBOL_NEXT, &lv_font_montserrat_20, p.fg);
+
+  mediaBtn(scr, 14, 200, 44, 32, card, p.line, 3, LV_SYMBOL_MINUS, &lv_font_montserrat_16, p.fg);
+  S.mVolLbl = lab(scr, 68, 198, 150, "Громкость —", f9, p.mut);
+  S.mVol = bar(scr, 68, 216, 150, 6, mix(p.bg, p.fg, 200), p.acc);
+  S.mMuteIcon = mediaBtn(scr, 226, 200, 40, 32, card, p.line, 4, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_16, p.fg);
+  mediaBtn(scr, 272, 200, 36, 32, card, p.line, 5, LV_SYMBOL_PLUS, &lv_font_montserrat_16, p.fg);
+}
+
+static lv_image_dsc_t coverDsc;
+
+static void updMedia(const PcStats& pc) {
+  if (!pc.online) {
+    setText(S.mApp, "ПК не на связи");
+    setText(S.mTitle, "");
+    setText(S.mArtist, "");
+  } else if (pc.mediaApp[0]) {
+    setText(S.mApp, pc.mediaApp);
+    setText(S.mTitle, pc.mediaTitle[0] ? pc.mediaTitle : (pc.mediaPlaying ? "звучит" : "на паузе"));
+    setText(S.mArtist, pc.mediaArtist);
+  } else {
+    setText(S.mApp, "Тишина");
+    setText(S.mTitle, "Нажмите «плей», чтобы продолжить");
+    setText(S.mArtist, "");
+  }
+  uint32_t cid = 0;
+  const uint8_t* cv = monitorCover(&cid);
+  bool show = cv && pc.online && pc.mediaApp[0] && cid == pc.mediaCover;
+  uint32_t want = show ? cid : 0;
+  if (want != S.mCoverId) {
+    S.mCoverId = want;
+    if (show) {
+      memset(&coverDsc, 0, sizeof(coverDsc));
+      coverDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+      coverDsc.header.cf = LV_COLOR_FORMAT_RGB565;
+      coverDsc.header.w = COVER_PX;
+      coverDsc.header.h = COVER_PX;
+      coverDsc.header.stride = COVER_PX * 2;
+      coverDsc.data_size = COVER_PX * COVER_PX * 2;
+      coverDsc.data = cv;
+      lv_image_set_src(S.mCover, &coverDsc);
+      lv_obj_invalidate(S.mCover);
+      lv_obj_remove_flag(S.mCover, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(S.mCover, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  setText(S.mPlayIcon, pc.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+  if (pc.online) {
+    if (pc.muted) setText(S.mVolLbl, "Звук выключен");
+    else setFmt(S.mVolLbl, "Громкость %d%%", pc.volume);
+  } else {
+    setText(S.mVolLbl, "Громкость —");
+  }
+  setBar(S.mVol, pc.online && !pc.muted ? pc.volume : 0);
+  setText(S.mMuteIcon, pc.muted ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX);
+}
+
+// ------------------------------------------------------------------ последние 12 часов
+// Открывается касанием часов: нагрузка и температуры CPU/GPU по 10 минут, сводка.
+static const int NIGHT = 103;
+
+static lv_obj_t* histChart(lv_obj_t* scr, int y, int h, uint32_t line) {
+  lv_obj_t* ch = lv_chart_create(scr);
+  lv_obj_remove_style_all(ch);
+  lv_obj_set_pos(ch, 12, y);
+  lv_obj_set_size(ch, 296, h);
+  lv_chart_set_type(ch, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(ch, 72);
+  lv_chart_set_div_line_count(ch, 3, 0);
+  lv_obj_set_style_line_color(ch, C(line), LV_PART_MAIN);
+  lv_obj_set_style_line_width(ch, 1, LV_PART_MAIN);
+  lv_obj_set_style_line_width(ch, 2, LV_PART_ITEMS);
+  lv_obj_set_style_size(ch, 0, 0, LV_PART_INDICATOR);
+  lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+  return ch;
+}
+
+void skinBuildNight(lv_obj_t* scr, int baseSkin) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = NIGHT;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  bool light = p.bg == 0xF4F2EE;
+  uint32_t c2 = light ? 0x2F6FD6 : 0x4CC9F0;
+  if ((p.acc & 0xFF) > ((p.acc >> 16) & 0xFF)) c2 = 0xFFB454;   // акцент синий — GPU оранжевым
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+  lab(scr, 12, 7, 200, "Последние 12 часов", f14b, p.fg);
+  S.hRange = lab(scr, 180, 9, 128, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  box(scr, 12, 30, 296, 1, p.line);
+
+  lab(scr, 12, 34, 100, "Нагрузка", f9, p.mut);
+  box(scr, 232, 40, 8, 3, p.acc, 1);
+  lab(scr, 243, 34, 30, "CPU", f8, p.mut);
+  box(scr, 274, 40, 8, 3, c2, 1);
+  lab(scr, 285, 34, 30, "GPU", f8, p.mut);
+  S.hLoad = histChart(scr, 50, 50, p.line);
+  lv_chart_set_axis_range(S.hLoad, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+  S.hGpu = lv_chart_add_series(S.hLoad, C(c2), LV_CHART_AXIS_PRIMARY_Y);
+  S.hCpu = lv_chart_add_series(S.hLoad, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
+
+  lab(scr, 12, 104, 140, "Температура", f9, p.mut);
+  S.hSum[3] = lab(scr, 160, 104, 148, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  S.hTemp = histChart(scr, 120, 50, p.line);
+  S.hGt = lv_chart_add_series(S.hTemp, C(c2), LV_CHART_AXIS_PRIMARY_Y);
+  S.hCt = lv_chart_add_series(S.hTemp, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
+  for (int i = 0; i < 4; i++) {
+    int x = 12 + i * 296 / 3 - (i == 0 ? 0 : i == 3 ? 40 : 20);
+    S.hT[i] = lab(scr, x, 172, 40, "", f8, p.mut, i == 0 ? LV_TEXT_ALIGN_LEFT : i == 3 ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_CENTER);
+  }
+  box(scr, 12, 188, 296, 1, p.line);
+  static const char* caps[3] = {"Пик температуры", "Трафик", "Больше всех"};
+  static const int cx[3] = {12, 132, 214}, cw[3] = {116, 78, 94};
+  for (int i = 0; i < 3; i++) {
+    S.hSum[i] = lab(scr, cx[i], 194, cw[i], caps[i], f8, p.mut);
+    S.hSumV[i] = lab(scr, cx[i], 208, cw[i], "—", f9b, p.fg);
+    lv_label_set_long_mode(S.hSumV[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_height(S.hSumV[i], 30);
+  }
+  S.hEmpty = lab(scr, 12, 80, 296, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
+}
+
+static void hhmm(char* b, size_t n, uint32_t t) {
+  time_t tt = t;
+  struct tm tm;
+  localtime_r(&tt, &tm);
+  snprintf(b, n, "%02d:%02d", tm.tm_hour, tm.tm_min);
+}
+
+static void updNight() {
+  static History h;
+  bool ok = monitorHistory(h);
+  if (!ok) {
+    setText(S.hEmpty, "Данных пока нет — их копит программа на ПК");
+    return;
+  }
+  setText(S.hEmpty, "");
+  int mn = 999, mx = -999;
+  for (int i = 0; i < 72; i++) {
+    lv_chart_set_series_value_by_id(S.hLoad, S.hCpu, i, h.cpu[i] >= 0 ? h.cpu[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hLoad, S.hGpu, i, h.gpu[i] >= 0 ? h.gpu[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hTemp, S.hCt, i, h.ct[i] > 0 ? h.ct[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hTemp, S.hGt, i, h.gt[i] > 0 ? h.gt[i] : LV_CHART_POINT_NONE);
+    if (h.ct[i] > 0) { mn = min(mn, (int)h.ct[i]); mx = max(mx, (int)h.ct[i]); }
+    if (h.gt[i] > 0) { mn = min(mn, (int)h.gt[i]); mx = max(mx, (int)h.gt[i]); }
+  }
+  if (mx > 0) {
+    lv_chart_set_axis_range(S.hTemp, LV_CHART_AXIS_PRIMARY_Y, mn - 3, mx + 3);
+    setFmt(S.hSum[3], "от %d до %d °C", mn, mx);
+  }
+  lv_chart_refresh(S.hLoad);
+  lv_chart_refresh(S.hTemp);
+  char a[8], b[8];
+  hhmm(a, sizeof(a), h.t0);
+  hhmm(b, sizeof(b), h.t0 + 72UL * h.step);
+  setFmt(S.hRange, "ПК работал %dч %02dм", h.onMin / 60, h.onMin % 60);
+  for (int i = 0; i < 4; i++) {
+    hhmm(a, sizeof(a), h.t0 + (uint32_t)i * 24UL * h.step);
+    setText(S.hT[i], a);
+  }
+  if (h.hot > 0) {
+    hhmm(a, sizeof(a), h.hotT);
+    setFmt(S.hSumV[0], "%d°C в %s", h.hot, a);
+  } else {
+    setText(S.hSumV[0], "—");
+  }
+  long mb = 0;
+  for (int i = 0; i < 72; i++) if (h.net[i] > 0) mb += h.net[i];
+  if (mb >= 1000) setFmt(S.hSumV[1], "%.1f ГБ", mb / 1000.0f);
+  else setFmt(S.hSumV[1], "%ld МБ", mb);
+  setText(S.hSumV[2], h.top[0] ? h.top : "—");
+}
+
+// Попадает ли касание в часы текущего скина.
+bool skinClockHit(int x, int y) {
+  lv_obj_t* objs[2] = {S.clock, S.date};
+  for (lv_obj_t* o : objs) {
+    if (!o) continue;
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    if (lv_area_get_width(&a) <= 1) continue;
+    if (x >= a.x1 - 10 && x <= a.x2 + 10 && y >= a.y1 - 10 && y <= a.y2 + 10) return true;
+  }
+  return false;
+}
+
+// ------------------------------------------------------------------ быстрый запуск
+// Открывается свайпом вниз. 4–6 плиток от ПК; выключение/перезагрузка — двойным касанием.
+static const int LAUNCH = 104;
+static lv_image_dsc_t appDsc[APP_MAX];
+static AppTile lApps[APP_MAX];
+
+static void launchTapCb(lv_event_t* e) {
+  int i = (int)(intptr_t)lv_event_get_user_data(e);
+  if (i < 0 || i >= S.lN) return;
+  if (lApps[i].confirm && !(S.lArmed == i && millis() - S.lArmedAt < 3000)) {
+    S.lArmed = i;
+    S.lArmedAt = millis();
+    setText(S.lName[i], "ещё раз — да");
+    lv_obj_set_style_border_color(S.lTile[i], C(0xFF4E6D), 0);
+    lv_obj_set_style_border_width(S.lTile[i], 2, 0);
+    if (S.mKey) S.mKey(20);   // только щелчок
+    return;
+  }
+  S.lArmed = -1;
+  S.lLaunched = i;
+  S.lLaunchedAt = millis();
+  setText(S.lName[i], "запускаю…");
+  lv_obj_set_style_border_color(S.lTile[i], C(S.lAcc), 0);
+  lv_obj_set_style_border_width(S.lTile[i], 2, 0);
+  if (S.mKey) S.mKey(100 + i);
+}
+
+static void launchLayout(int n) {
+  for (int i = 0; i < APP_MAX; i++) {
+    bool on = i < n;
+    if (on) lv_obj_remove_flag(S.lTile[i], LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(S.lTile[i], LV_OBJ_FLAG_HIDDEN);
+    if (!on) continue;
+    int cols = n <= 4 ? 2 : 3;
+    int w = n <= 4 ? 148 : 96, h = 92;
+    int row = i / cols, col = i % cols;
+    int inRow = min(cols, n - row * cols);
+    int x0 = (320 - (inRow * w + (inRow - 1) * 8)) / 2;
+    lv_obj_set_pos(S.lTile[i], x0 + col * (w + 8), 40 + row * 98);
+    lv_obj_set_size(S.lTile[i], w, h);
+    lv_obj_set_pos(S.lImg[i], (w - APP_ICON) / 2 - 1, 10);
+    lv_obj_set_pos(S.lLetter[i], (w - APP_ICON) / 2 - 1, 10);
+    lv_obj_set_pos(S.lName[i], 4, 66);
+    lv_obj_set_width(S.lName[i], w - 10);
+  }
+}
+
+void skinBuildLaunch(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = LAUNCH;
+  S.mKey = onKey;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  bool light = p.bg == 0xF4F2EE;
+  S.lCard = mix(p.bg, p.fg, light ? 235 : 225);
+  S.lAcc = p.acc;
+  S.lLine = p.line;
+  S.lFg = p.fg;
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+  lab(scr, 14, 9, 150, "Быстрый запуск", f14b, p.fg);
+  mediaBtn(scr, 262, 2, 54, 40, S.lCard, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
+  S.lHint = lab(scr, 0, 110, 320, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
+  for (int i = 0; i < APP_MAX; i++) {
+    lv_obj_t* t = box(scr, 0, 0, 96, 92, S.lCard, 14, p.line, 1);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(t, C(mix(S.lCard, p.acc, 200)), LV_STATE_PRESSED);
+    lv_obj_add_event_cb(t, launchTapCb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    S.lTile[i] = t;
+    lv_obj_t* lt = box(t, 0, 0, APP_ICON, APP_ICON, mix(p.bg, p.fg, 190), LV_RADIUS_CIRCLE);
+    S.lLetter[i] = lab(lt, 0, 12, APP_ICON, "", f20b, p.fg, LV_TEXT_ALIGN_CENTER);
+    S.lLetter[i] = lt;
+    S.lImg[i] = lv_image_create(t);
+    lv_obj_add_flag(S.lImg[i], LV_OBJ_FLAG_HIDDEN);
+    S.lName[i] = lab(t, 4, 66, 86, "", f9b, p.fg, LV_TEXT_ALIGN_CENTER);
+    lv_label_set_long_mode(S.lName[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_height(S.lName[i], 16);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void updLaunch() {
+  uint32_t rev = 0;
+  int n = monitorApps(lApps, &rev);
+  uint32_t now = millis();
+  if (S.lArmed >= 0 && now - S.lArmedAt > 3000) {
+    int i = S.lArmed;
+    S.lArmed = -1;
+    setText(S.lName[i], lApps[i].name);
+    lv_obj_set_style_border_color(S.lTile[i], C(S.lLine), 0);
+    lv_obj_set_style_border_width(S.lTile[i], 1, 0);
+  }
+  if (S.lLaunched >= 0 && now - S.lLaunchedAt > 1200) {
+    S.lLaunched = -1;
+    if (S.mKey) S.mKey(9);   // закрыть
+    return;
+  }
+  if (rev == S.lRev && n == S.lN) return;
+  S.lRev = rev;
+  S.lN = n;
+  setText(S.lHint, n ? "" : "Плитки придут с ПК — нужна программа PC Monitor и кабель USB");
+  launchLayout(n);
+  for (int i = 0; i < n; i++) {
+    if (S.lArmed != i && S.lLaunched != i) setText(S.lName[i], lApps[i].name);
+    lv_obj_t* letterLbl = lv_obj_get_child(S.lLetter[i], 0);
+    char l[5] = {0};
+    const char* nm = lApps[i].name;
+    int len = (nm[0] & 0x80) ? ((nm[0] & 0xE0) == 0xC0 ? 2 : 3) : 1;
+    memcpy(l, nm, min(len, 4));
+    lv_label_set_text(letterLbl, l);
+    if (lApps[i].icon) {
+      lv_image_dsc_t& d = appDsc[i];
+      memset(&d, 0, sizeof(d));
+      d.header.magic = LV_IMAGE_HEADER_MAGIC;
+      d.header.cf = LV_COLOR_FORMAT_RGB565A8;
+      d.header.w = APP_ICON;
+      d.header.h = APP_ICON;
+      d.header.stride = APP_ICON * 2;
+      d.data_size = APP_ICON * APP_ICON * 3;
+      d.data = lApps[i].icon;
+      lv_image_set_src(S.lImg[i], &d);
+      lv_obj_invalidate(S.lImg[i]);
+      lv_obj_remove_flag(S.lImg[i], LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(S.lLetter[i], LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(S.lImg[i], LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(S.lLetter[i], LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+}
+
 // Попадает ли касание в блок погоды текущего скина (значок, температура, прогноз).
 bool skinWeatherHit(int x, int y) {
   lv_obj_t* objs[3 + 8 * 2];
@@ -1657,6 +2172,7 @@ void skinBuild(lv_obj_t* scr, int idx) {
     case 9: buildOrbit(scr); break;
     case 10: buildHud(scr); break;
     case 11: buildScanline(scr); break;
+    case 12: buildSound(scr); break;
     default: buildAnalog(scr); break;
   }
 }
@@ -1669,6 +2185,18 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
   }
   if (S.idx == FCAST) {
     updForecast();
+    return;
+  }
+  if (S.idx == MEDIA) {
+    updMedia(pc);
+    return;
+  }
+  if (S.idx == NIGHT) {
+    updNight();
+    return;
+  }
+  if (S.idx == LAUNCH) {
+    updLaunch();
     return;
   }
 
@@ -1712,6 +2240,7 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
     case 9: updOrbit(pc); break;
     case 10: updHud(pc); break;
     case 11: updScanline(pc); break;
+    case 12: break;   // «Звук» обновляется своим таймером
     default: updAnalog(pc); break;
   }
 }

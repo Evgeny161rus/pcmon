@@ -11,6 +11,8 @@
 namespace {
 constexpr uint32_t kRate = 44100;
 i2s_chan_handle_t sTx = nullptr;
+i2s_chan_handle_t sRx = nullptr;   // микрофон (АЦП ES8311, левый канал)
+bool sRxOn = false;
 bool sReady = false;
 
 bool esWrite(uint8_t reg, uint8_t v) {
@@ -97,13 +99,13 @@ bool audioBegin() {
 
   i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   chan.auto_clear = true;
-  if (i2s_new_channel(&chan, &sTx, nullptr) != ESP_OK) return false;
+  if (i2s_new_channel(&chan, &sTx, &sRx) != ESP_OK) return false;
 
   i2s_std_config_t cfg = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(kRate),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
       .gpio_cfg = {(gpio_num_t)AUDIO_MCLK, (gpio_num_t)AUDIO_BCLK, (gpio_num_t)AUDIO_LRCK,
-                   (gpio_num_t)AUDIO_DOUT, (gpio_num_t)-1,
+                   (gpio_num_t)AUDIO_DOUT, (gpio_num_t)AUDIO_DIN,
                    {.mclk_inv = false, .bclk_inv = false, .ws_inv = false}},
   };
   cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
@@ -111,6 +113,11 @@ bool audioBegin() {
   if (i2s_channel_init_std_mode(sTx, &cfg) != ESP_OK || i2s_channel_enable(sTx) != ESP_OK) {
     Serial.println("[audio] I2S не запустился");
     return false;
+  }
+  if (sRx && i2s_channel_init_std_mode(sRx, &cfg) != ESP_OK) {
+    Serial.println("[audio] I2S RX не запустился");
+    i2s_del_channel(sRx);
+    sRx = nullptr;
   }
 
   sReady = codecInit();
@@ -151,3 +158,22 @@ void audioBeep(uint16_t hz, uint16_t ms) {
 }
 
 void audioClick() { audioBeep(1400, 14); }
+
+bool audioMicEnable(bool on) {
+  if (!sReady || !sRx) return false;
+  if (on == sRxOn) return true;
+  esp_err_t e = on ? i2s_channel_enable(sRx) : i2s_channel_disable(sRx);
+  if (e == ESP_OK) sRxOn = on;
+  return e == ESP_OK;
+}
+
+size_t audioMicRead(int16_t* mono, size_t frames, uint32_t timeoutMs) {
+  if (!sRxOn || !frames) return 0;
+  static int16_t raw[1024 * 2];
+  if (frames > 1024) frames = 1024;
+  size_t got = 0;
+  if (i2s_channel_read(sRx, raw, frames * 2 * sizeof(int16_t), &got, timeoutMs) != ESP_OK && !got) return 0;
+  size_t n = got / (2 * sizeof(int16_t));
+  for (size_t i = 0; i < n; i++) mono[i] = raw[i * 2];   // левый слот — АЦП микрофона
+  return n;
+}

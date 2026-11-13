@@ -17,6 +17,7 @@ Wi-Fi, громкость), измеряет скорость интернета
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import ipaddress
 import json
@@ -37,8 +38,14 @@ from urllib.parse import parse_qs, urlparse
 import psutil
 import requests
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from launcher import ACTIONS, Launcher, item_image, pick_file, start_menu_apps, to_png_b64  # noqa: E402
+from media import MediaWatcher  # noqa: E402
+from panel import PAGE as PANEL_PAGE  # noqa: E402
+from skin_previews import PREVIEWS  # noqa: E402
+
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.5.0"
+VERSION = "1.7.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -68,9 +75,10 @@ DEFAULT_PING_URL = "https://speed.cloudflare.com/__down?bytes=0"
 
 
 SKIN_NAMES = ["Приборы", "Неон", "Минимализм", "Ретро-радио", "Часы", "Терминал", "Плитки", "Лампы",
-              "Импульс", "Шина", "HUD", "Сканлайн"]
+              "Импульс", "Шина", "HUD", "Сканлайн", "Звук"]
 
 # Команда автозапуска задаётся программой-оболочкой (pcmon_app.pyw); без неё автозапуск недоступен.
+SHOW_HOOK = None   # программа-компаньон: показать своё окно
 AUTOSTART_CMD = ""
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _RUN_NAME = "PCMonitor"
@@ -281,6 +289,144 @@ class WifiReader:
         return out
 
 
+# --------------------------------------------------------------------------- история
+class History:
+    """Раз в минуту запоминает нагрузку, температуры и трафик; хранит сутки.
+    Для экрана сворачивает последние 12 часов в 72 отрезка по 10 минут."""
+
+    STEP = 600
+    SLOTS = 72
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.rows: list[list] = []      # [t, cpu, gpu, ct, gt, mb, top]
+        self._saved = 0.0
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self.rows = [r for r in json.load(f) if isinstance(r, list) and len(r) == 7]
+        except Exception:
+            self.rows = []
+
+    def add(self, cpu: float, gpu: float, ct: float, gt: float, mb: float, top: str) -> None:
+        now = int(time.time())
+        with self.lock:
+            self.rows.append([now, round(cpu, 1), round(gpu, 1), round(ct, 1), round(gt, 1), round(mb, 2), top])
+            self.rows = [r for r in self.rows if now - r[0] <= 86400]
+            if now - self._saved > 600:
+                self._saved = now
+                try:
+                    tmp = self.path + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(self.rows, f, separators=(",", ":"))
+                    os.replace(tmp, self.path)
+                except Exception:
+                    pass
+
+    def summary(self) -> dict:
+        end = int(time.time()) // self.STEP * self.STEP + self.STEP
+        t0 = end - self.STEP * self.SLOTS
+        cpu = [[] for _ in range(self.SLOTS)]
+        gpu = [[] for _ in range(self.SLOTS)]
+        ct = [-1.0] * self.SLOTS
+        gt = [-1.0] * self.SLOTS
+        net = [0.0] * self.SLOTS
+        tops: dict[str, int] = {}
+        hot = (-1.0, 0)
+        with self.lock:
+            rows = [r for r in self.rows if r[0] >= t0]
+        for t, c, g, tc, tg, mb, top in rows:
+            i = (t - t0) // self.STEP
+            if not 0 <= i < self.SLOTS:
+                continue
+            cpu[i].append(c)
+            gpu[i].append(g)
+            ct[i] = max(ct[i], tc)
+            gt[i] = max(gt[i], tg)
+            net[i] += mb
+            if top and c >= 10:
+                tops[top] = tops.get(top, 0) + 1
+            if tc > hot[0]:
+                hot = (tc, t)
+        avg = lambda v: int(round(sum(v) / len(v))) if v else -1  # noqa: E731
+        on = sum(1 for v in cpu if v)
+        top = max(tops, key=tops.get) if tops else ""
+        return {
+            "hist": 1, "t0": t0, "step": self.STEP,
+            "cpu": [avg(v) for v in cpu], "gpu": [avg(v) for v in gpu],
+            "ct": [int(round(v)) for v in ct], "gt": [int(round(v)) for v in gt],
+            "net": [int(round(v)) for v in net],
+            "hot": int(round(hot[0])), "hotT": hot[1], "top": top[:26],
+            "onMin": on * self.STEP // 60,
+        }
+
+
+# --------------------------------------------------------------------------- медиа
+MEDIA_VK = {"prev": 0xB1, "play": 0xB3, "next": 0xB0}
+MEDIA_APPS = {
+    "spotify.exe": "Spotify", "chrome.exe": "Chrome", "msedge.exe": "Edge", "firefox.exe": "Firefox",
+    "browser.exe": "Яндекс Браузер", "opera.exe": "Opera", "vlc.exe": "VLC", "aimp.exe": "AIMP",
+    "foobar2000.exe": "foobar2000", "wmplayer.exe": "Windows Media Player", "music.ui.exe": "Музыка",
+    "microsoft.media.player.exe": "Медиаплеер", "telegram.exe": "Telegram", "discord.exe": "Discord",
+    "yandexmusic.exe": "Яндекс Музыка", "potplayermini64.exe": "PotPlayer", "mpc-hc64.exe": "MPC-HC",
+    "steam.exe": "Steam", "itunes.exe": "iTunes", "winamp.exe": "Winamp",
+}
+TITLE_TAILS = (" - Google Chrome", " — Яндекс Браузер", " - Яндекс Браузер", " - Microsoft​ Edge", " - Microsoft Edge",
+               " — Mozilla Firefox", " - Mozilla Firefox", " - Opera", " - YouTube", " - VLC media player")
+
+
+def press_media_key(key: str) -> bool:
+    vk = MEDIA_VK.get(key)
+    if vk is None or os.name != "nt":
+        return False
+    u = ctypes.windll.user32
+    u.keybd_event(vk, 0, 1, 0)        # KEYEVENTF_EXTENDEDKEY
+    u.keybd_event(vk, 0, 1 | 2, 0)    # + KEYEVENTF_KEYUP
+    return True
+
+
+def window_titles_by_exe(exe: str) -> list[str]:
+    """Заголовки видимых окон всех процессов с таким именем exe."""
+    if os.name != "nt":
+        return []
+    pids = set()
+    for pr in psutil.process_iter(["name"]):
+        if (pr.info.get("name") or "").lower() == exe:
+            pids.add(pr.pid)
+    if not pids:
+        return []
+    u = ctypes.windll.user32
+    titles: list[str] = []
+    proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def cb(hwnd, _):
+        if not u.IsWindowVisible(hwnd):
+            return True
+        pid = ctypes.c_ulong()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids:
+            n = u.GetWindowTextLengthW(hwnd)
+            if n > 0:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(hwnd, buf, n + 1)
+                titles.append(buf.value)
+        return True
+
+    u.EnumWindows(proto(cb), 0)
+    return titles
+
+
+def clean_media_title(app: str, title: str) -> str:
+    t = title.strip()
+    for tail in TITLE_TAILS:
+        if t.endswith(tail):
+            t = t[: -len(tail)].strip()
+    t = re.sub(r"^\(\d+\)\s*", "", t)          # «(3) Видео» — счётчик уведомлений во вкладке
+    if t.lower() in ("spotify", "spotify premium", "spotify free", app.lower(), ""):
+        return ""
+    return t[:70]
+
+
 # --------------------------------------------------------------------------- громкость
 class VolumeWorker(threading.Thread):
     """Отдельный поток для COM/WASAPI: команды приходят через очередь."""
@@ -294,6 +440,50 @@ class VolumeWorker(threading.Thread):
         self.available = False
         self.error = ""
         self.vol = None
+        # что звучит: {"app", "title", "playing"}; последнее звучавшее помним 15 минут
+        self.media = {"app": "", "title": "", "playing": False}
+        self._media_seen = 0.0
+        self._media_exe = ""
+
+    def _scan_media(self) -> None:
+        from pycaw.pycaw import AudioUtilities  # type: ignore
+
+        active_exe = ""
+        for sess in AudioUtilities.GetAllSessions():
+            try:
+                proc = sess.Process
+                if proc is None:
+                    continue
+                exe = proc.name().lower()
+                if exe.startswith("python") or exe in ("audiodg.exe", "svchost.exe", "pcmonitor.exe"):
+                    continue
+                if sess.State == 1:          # AudioSessionStateActive
+                    active_exe = exe
+                    if exe in MEDIA_APPS:
+                        break
+            except Exception:
+                continue
+        now = time.time()
+        if active_exe:
+            self._media_exe = active_exe
+            self._media_seen = now
+        exe = self._media_exe
+        if not exe or now - self._media_seen > 900:
+            m = {"app": "", "title": "", "playing": False}
+        else:
+            app = MEDIA_APPS.get(exe, exe[:-4] if exe.endswith(".exe") else exe)
+            title = ""
+            for t in window_titles_by_exe(exe):
+                title = clean_media_title(app, t)
+                if title:
+                    break
+            m = {"app": app[:23], "title": title, "playing": bool(active_exe)}
+        with self.lock:
+            self.media = m
+
+    def media_state(self) -> dict:
+        with self.lock:
+            return dict(self.media)
 
     def _init_com(self) -> None:
         try:
@@ -340,6 +530,7 @@ class VolumeWorker(threading.Thread):
             self.available = False
             self.error = f"pycaw: {exc}"
         last = 0.0
+        last_media = 0.0
         while True:
             cmd = None
             try:
@@ -358,6 +549,12 @@ class VolumeWorker(threading.Thread):
                     if evt:
                         evt.set()
             now = time.time()
+            if self.available and now - last_media >= 1.5:
+                last_media = now
+                try:
+                    self._scan_media()
+                except Exception:
+                    pass
             if self.available and now - last >= 0.5:
                 last = now
                 try:
@@ -438,6 +635,12 @@ class UsbLink(threading.Thread):
                 self.agent.volume.set_mute(bool(msg.get("mute")))
             elif cmd == "speedtest":
                 self.agent.start_speedtest()
+            elif cmd == "media":
+                self.agent.media_key(str(msg.get("key", "")))
+            elif cmd == "launch":
+                ok, info = self.agent.launcher.launch(int(msg.get("i", -1)))
+                if not ok:
+                    self.error = f"launch: {info}"
         except Exception as exc:
             self.error = f"cmd: {exc}"
 
@@ -492,6 +695,10 @@ class UsbLink(threading.Thread):
             buf = b""
             last = 0.0
             last_wx, last_wx_t0 = 0.0, None
+            last_hist = 0.0
+            apps_ver = None
+            apps_sent = 0.0
+            cover_sent = 0.0
             try:
                 while True:
                     now = time.time()
@@ -503,6 +710,41 @@ class UsbLink(threading.Thread):
                         line = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
                         s.write(line.encode("utf-8"))
                         self.sent += 1
+                        # плитки быстрого запуска: плата в приветствии сообщает версию списка (av)
+                        # и какие иконки уже получила (im); недостающее досылаем
+                        lz = self.agent.launcher
+                        h = self.hello
+                        if now - apps_sent > 8 and (h.get("av") != lz.ver or apps_ver != lz.ver or
+                                                    (int(h.get("im") or 0) & ((1 << lz.count) - 1)) != (1 << lz.count) - 1):
+                            apps_sent = now
+                            full = h.get("av") != lz.ver or apps_ver != lz.ver
+                            apps_ver = lz.ver
+                            have = 0 if full else int(h.get("im") or 0)
+                            for m in lz.board_messages():
+                                if "icon" in m and have >> m["icon"] & 1:
+                                    continue
+                                if "apps" in m and not full:
+                                    continue
+                                # иконка ~9 КБ: порциями с паузами, приёмный буфер платы всего 8 КБ
+                                raw = (json.dumps(m, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                                for k in range(0, len(raw), 1024):
+                                    s.write(raw[k:k + 1024])
+                                    s.flush()
+                                    time.sleep(0.03)
+                        # обложка: плата сообщает в приветствии, какая у неё (cv)
+                        cid, craw, _ = self.agent.media.cover()
+                        if now - cover_sent > 3 and int(self.hello.get("cv") or 0) != cid and "cv" in self.hello:
+                            cover_sent = now
+                            msg = {"cover": cid, "d": base64.b64encode(craw).decode()} if cid and craw else {"cover": 0}
+                            raw = (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
+                            for k in range(0, len(raw), 1024):
+                                s.write(raw[k:k + 1024])
+                                s.flush()
+                                time.sleep(0.03)
+                        if now - last_hist > 300:
+                            last_hist = now
+                            hs = self.agent.history.summary()
+                            s.write((json.dumps(hs, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
                         wx = self.agent.forecast
                         if wx and (now - last_wx > 600 or wx.get("t0") != last_wx_t0):
                             last_wx, last_wx_t0 = now, wx.get("t0")
@@ -538,6 +780,9 @@ class Agent:
         self.wifi = WifiReader()
         self.usb = UsbLink(self, args.usb_port)
         self.forecast: dict = {}   # почасовой прогноз для заставки экрана
+        self.history = History(os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json"))
+        self.media = MediaWatcher()
+        self.launcher = Launcher(os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps.json"))
         self.forecast_source = ""
         self.forecast_error = ""
         self._wx_wake = threading.Event()
@@ -708,18 +953,28 @@ class Agent:
                 cmd["mail"] = mail
                 self.forecast = {}
                 self._wx_wake.set()
+        show = str(data.get("show") or "")
+        if show in ("fc", "media", "night", "launch", "idle", "home", "cal", "calreset"):
+            cmd["show"] = show
         if not cmd:
             return self.screen_state()
         if self.usb.fresh():
             self.usb.outbox.put({"set": cmd})
-            self.usb.hello.update(cmd)   # до следующего приветствия показываем новое
+            self.usb.hello.update({k: v for k, v in cmd.items() if k != "show"})   # до следующего приветствия
         else:
             ip = self.screen_addr()
             if ip:
+                params = {k: v for k, v in cmd.items() if k != "show"}
+                if show:
+                    params.update({"idle": 0, "fc": 0} if show == "home" else {show: 1})
                 try:
-                    requests.get(f"http://{ip}/api/set", params=cmd, timeout=3)
+                    requests.get(f"http://{ip}/api/set", params=params, timeout=3)
                 except requests.RequestException:
                     pass
+            else:
+                st = self.screen_state()
+                st["ok"] = False
+                return st
         return self.screen_state()
 
     @staticmethod
@@ -1267,17 +1522,35 @@ class Agent:
             "muted": vol["muted"] if vol["available"] else False,
             "volumeAvailable": vol["available"],
             "volumeError": vol["error"][:40],
+            "media": self.media_state(),
             "ping": self._ping,
             "top": self._top,
             "speed": speed,
         }
 
     def sample_loop(self) -> None:
+        last_hist = 0.0
+        net_prev = None
         while True:
             try:
                 self.data = self._sample()
             except Exception as exc:
                 self.data = {"ok": False, "error": str(exc)[:120]}
+            now = time.time()
+            if now - last_hist >= 60:
+                last_hist = now
+                try:
+                    d = self.data
+                    n = psutil.net_io_counters()
+                    total = (n.bytes_recv + n.bytes_sent) if n else 0
+                    mb = max(0.0, (total - net_prev) / 1e6) if net_prev is not None else 0.0
+                    net_prev = total
+                    top = (self._top[0]["name"] if self._top else "")
+                    self.history.add(float(d["cpu"]["load"]), float(d.get("gpu", {}).get("load", 0) or 0),
+                                     float(d["cpu"].get("temp", -1)), float(d.get("gpu", {}).get("temp", -1) or -1),
+                                     mb, top)
+                except Exception:
+                    pass
             time.sleep(self.args.interval)
 
     # -- speedtest ----------------------------------------------------------
@@ -1492,10 +1765,23 @@ class Agent:
                 except OSError:
                     pass
 
+    def media_state(self) -> dict:
+        """Что играет: из системной медиапанели Windows, иначе — по звучащей программе."""
+        if self.media.available:
+            m = self.media.snapshot()
+            if m["app"]:
+                return m
+        m = self.volume.media_state()
+        return {"app": m["app"], "title": m["title"], "artist": "", "playing": m["playing"], "cover": 0}
+
+    def media_key(self, key: str) -> bool:
+        return self.media.command(key) or press_media_key(key)
+
     def start(self) -> None:
         self._refresh_partitions()
         self.data = self._sample()
         self.volume.start()
+        self.media.start()
         threading.Thread(target=self._forecast_loop, daemon=True, name="forecast").start()
         if not self.args.no_usb:
             self.usb.start()
@@ -1525,142 +1811,7 @@ class Agent:
 
 
 # --------------------------------------------------------------------------- HTTP
-PAGE = """<!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PC Monitor</title><style>
-:root{--bg:#0e1014;--card:#171a20;--card2:#1f232b;--line:#2b303a;--text:#f3f5f8;--mut:#a3acb9;--acc:#ff9f1c;--ok:#46e06a;--bad:#ff5a4f}
-*{box-sizing:border-box}html,body{margin:0}
-body{background:var(--bg);color:var(--text);font:14px/1.4 "Segoe UI",system-ui,sans-serif;padding:18px}
-.wrap{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-h1{font-size:20px;margin:0;font-weight:700;letter-spacing:.02em}
-.status{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px}
-.dot{width:10px;height:10px;border-radius:50%;background:var(--bad);flex:none}.dot.on{background:var(--ok)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
-.k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
-.v{font-size:26px;font-weight:700;margin:4px 0 2px;font-variant-numeric:tabular-nums}
-.s{color:var(--mut);font-size:12px;min-height:17px}
-.bar{height:4px;background:var(--card2);border-radius:99px;overflow:hidden;margin-top:8px}.bar>i{display:block;height:100%;width:0;background:var(--acc);border-radius:99px;transition:width .4s}
-h2{font-size:13px;margin:0 0 12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.08em}
-.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
-.skins{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.skin{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;border:2px solid var(--line);background:var(--card2);color:var(--text);font:inherit;font-weight:600;cursor:pointer;text-align:left}
-.skin[aria-pressed=true]{border-color:var(--acc)}
-.sw{width:44px;height:33px;border-radius:6px;flex:none;position:relative;overflow:hidden;border:1px solid #0006}
-.sw i{position:absolute;border-radius:50%}
-.row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
-.row label{color:var(--text)}
-input[type=text],select{background:var(--card2);border:1px solid var(--line);border-radius:8px;color:var(--text);font:inherit;padding:8px 10px}
-#city{width:170px}
-input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
-input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
-button.b{padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card2);color:var(--text);font:inherit;font-weight:600;cursor:pointer}
-button.b.p{background:var(--acc);border-color:var(--acc);color:#1a1205}
-button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.note{color:var(--mut);font-size:12px;margin-top:10px}
-</style></head><body><div class="wrap">
-<header><h1>PC Monitor</h1><span class="s" id="host"></span>
-<div class="status"><span class="dot" id="dot"></span><span id="link">ищу экран…</span></div></header>
-<div class="grid">
-<div class="card"><div class="k">Процессор</div><div class="v" id="cpu">—</div><div class="s" id="cpus"></div><div class="bar"><i id="cpub"></i></div></div>
-<div class="card"><div class="k">Видеокарта</div><div class="v" id="gpu">—</div><div class="s" id="gpus"></div><div class="bar"><i id="gpub"></i></div></div>
-<div class="card"><div class="k">Память</div><div class="v" id="ram">—</div><div class="s" id="rams"></div><div class="bar"><i id="ramb"></i></div></div>
-<div class="card"><div class="k">Диск</div><div class="v" id="disk">—</div><div class="s" id="disks"></div><div class="bar"><i id="diskb"></i></div></div>
-<div class="card"><div class="k">Сеть</div><div class="v" id="net">—</div><div class="s" id="nets"></div></div>
-</div>
-<div class="cols">
-<div class="card"><h2>Экран</h2>
-<div class="skins" id="skins"></div>
-<div class="row"><input type="checkbox" id="flip"><label for="flip">Перевернуть на 180°</label></div>
-<div class="row"><label for="city">Погода (город РФ)</label><input type="text" id="city" list="citylist" placeholder="Город РФ" autocomplete="off"><datalist id="citylist"></datalist><button class="b" id="cityb">Выбрать</button></div>
-<div class="note" id="scrnote"></div></div>
-<div class="card"><h2>Компьютер</h2>
-<div class="row" style="margin-top:0"><label for="vol">Громкость</label><input type="range" id="vol" min="0" max="100"><span id="volv" style="width:44px;text-align:right">—</span><button class="b" id="mute">Звук</button></div>
-<div class="row"><button class="b p" id="test">Тест скорости</button><span id="speed" class="s"></span></div>
-<div class="bar"><i id="spb"></i></div>
-<div class="row"><input type="checkbox" id="auto"><label for="auto">Запускать вместе с Windows</label></div>
-<div class="note" id="appnote"></div></div>
-</div></div>
-<script>
-const $=id=>document.getElementById(id);
-const SK=[["Приборы","#0c0e11","#ff9f1c","#4cc9f0"],["Неон","#07060d","#22e3ff","#ff4df5"],["Минимализм","#f4f2ee","#16161a","#c2410c"],["Ретро-радио","#1c1a17","#f3e6c4","#5ef2d6"],["Часы","#000000","#ffa51e","#ff3b6b"],["Терминал","#020a04","#35e85a","#28c048"],["Плитки","#0b0c10","#1f64f2","#763af5"],["Лампы","#0e0905","#ff8a2b","#e6d7c3"],["Импульс","#07111d","#24d8ff","#8b6cff"],["Шина","#081018","#38bfd5","#45e0b2"],["HUD","#0b0d12","#ff4e9b","#27d9f2"],["Сканлайн","#080d12","#42d8ff","#ff4e9b"]];
-async function j(u,o){const r=await fetch(u,o);return r.json()}
-function post(u,b){return j(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
-SK.forEach((s,i)=>{const b=document.createElement('button');b.className='skin';b.type='button';b.setAttribute('aria-pressed','false');
-b.innerHTML=`<span class="sw" style="background:${s[1]}"><i style="width:22px;height:22px;left:5px;top:5px;border:3px solid ${s[2]}"></i><i style="width:8px;height:8px;right:5px;bottom:5px;background:${s[3]}"></i></span><span></span>`;
-b.lastChild.textContent=s[0];b.onclick=async()=>{mark(i);show(await post('/api/screen/set',{skin:i}))};$('skins').appendChild(b)});
-function mark(i){[...$('skins').children].forEach((b,k)=>b.setAttribute('aria-pressed',k===i?'true':'false'))}
-function pct(id,v,on){$(id).textContent=on?v.toFixed(0)+'%':'—';$(id+'b').style.width=(on?v:0)+'%'}
-let cityEdit=false,volDrag=false;
-const PRESET_CITIES=[
-  ["Геленджик","Краснодарский край","weather-gelendzhik-5213","gelendzhik"],
-  ["Краснодар","Краснодарский край","weather-krasnodar-5136","krasnodar"],
-  ["Новороссийск","Краснодарский край","weather-novorossiysk-5214","novorossiysk"],
-  ["Сочи","Краснодарский край","weather-sochi-5233","sochi"],
-  ["Анапа","Краснодарский край","weather-anapa-5211","anapa"],
-  ["Туапсе","Краснодарский край","weather-tuapse-5219","tuapse"],
-  ["Ростов-на-Дону","Ростовская область","weather-rostov-na-donu-5110","rostov_na_donu"],
-  ["Ставрополь","Ставропольский край","weather-stavropol-5141","stavropol"],
-  ["Волгоград","Волгоградская область","weather-volgograd-5089","volgograd"],
-  ["Симферополь","Республика Крым","weather-simferopol-4995","simferopol"],
-  ["Севастополь","Крым","weather-sevastopol-5003","sevastopol"],
-  ["Москва","Москва","weather-moscow-4368","moskva"],
-  ["Санкт-Петербург","Санкт-Петербург","weather-sankt-peterburg-4079","sankt_peterburg"],
-  ["Воронеж","Воронежская область","weather-voronezh-5026","voronezh"],
-  ["Нижний Новгород","Нижегородская область","weather-nizhny-novgorod-4355","nizhniy_novgorod"],
-  ["Казань","Республика Татарстан","weather-kazan-4364","kazan"],
-  ["Самара","Самарская область","weather-samara-4618","samara"],
-  ["Уфа","Республика Башкортостан","weather-ufa-4588","ufa"],
-  ["Екатеринбург","Свердловская область","weather-yekaterinburg-4517","ekaterinburg"],
-  ["Челябинск","Челябинская область","weather-chelyabinsk-4565","chelyabinsk"],
-  ["Пермь","Пермский край","weather-perm-4476","perm"],
-  ["Тюмень","Тюменская область","weather-tyumen-4501","tyumen"],
-  ["Омск","Омская область","weather-omsk-4578","omsk"],
-  ["Новосибирск","Новосибирская область","weather-novosibirsk-4690","novosibirsk"],
-  ["Красноярск","Красноярский край","weather-krasnoyarsk-4674","krasnoyarsk"],
-  ["Иркутск","Иркутская область","weather-irkutsk-4787","irkutsk"],
-  ["Хабаровск","Хабаровский край","weather-khabarovsk-4862","habarovsk"],
-  ["Владивосток","Приморский край","weather-vladivostok-4877","vladivostok"],
-  ["Калининград","Калининградская область","weather-kaliningrad-4225","kaliningrad"],
-  ["Мурманск","Мурманская область","weather-murmansk-3903","murmansk"]
-];
-const cityMap=new Map();
-function fillCities(list){const dl=$('citylist');dl.innerHTML='';list.forEach(c=>{cityMap.set(c[0].toLowerCase(),{city:c[0],gm:c[2],mail:c[3]});const o=document.createElement('option');o.value=c[0];o.label=c[1];dl.appendChild(o)})}
-fillCities(PRESET_CITIES);
-function show(s){if(!s||!s.ok)return;const on=s.link!=='none';$('dot').className='dot'+(on?' on':'');
-$('link').textContent=s.link==='usb'?`Экран подключён по USB (${s.port}), прошивка ${s.fw||'?'}`:s.link==='wifi'?`Экран на связи по Wi-Fi (${s.ip})`:'Экран не найден — проверьте кабель';
-if(s.skin!=null)mark(s.skin);if(s.flip!=null)$('flip').checked=!!s.flip;if(s.city!=null&&!cityEdit)$('city').value=s.city;
-$('scrnote').textContent=on?'Свайп по экрану тоже меняет скин. Касание открывает меню.':'Настройки применятся, когда экран появится на связи.'}
-async function refresh(){try{const d=await j('/api/stats');
-$('host').textContent=`${d.host} · ${d.os}`;
-pct('cpu',d.cpu.load,true);$('cpus').textContent=(d.cpu.temp>0?d.cpu.temp.toFixed(0)+'°C · ':'')+d.cpu.freq.toFixed(1)+' ГГц';
-pct('gpu',d.gpu.load,d.gpu.present);$('gpus').textContent=d.gpu.present?`${d.gpu.temp>0?d.gpu.temp.toFixed(0)+'°C · ':''}VRAM ${d.gpu.vram.toFixed(0)}%`:'нет видеокарты';
-pct('ram',d.ram.percent,true);$('rams').textContent=`${d.ram.used.toFixed(1)} из ${d.ram.total.toFixed(0)} ГБ`;
-pct('disk',d.disk.percent,true);$('disks').textContent=`${d.disk.used.toFixed(0)} из ${d.disk.total.toFixed(0)} ГБ`;
-$('net').textContent=`↓ ${d.net.down.toFixed(1)}`;$('nets').textContent=`↑ ${d.net.up.toFixed(1)} Мбит/с · пинг ${d.ping||'—'} мс`;
-if(!volDrag){$('vol').value=d.volumeLevel;$('volv').textContent=d.volumeAvailable?d.volumeLevel+'%':'—'}
-$('mute').textContent=d.muted?'Включить звук':'Выключить звук';
-const s=d.speed;$('spb').style.width=(s.testing?s.progress*100:0)+'%';
-$('speed').textContent=s.testing?s.stage:(s.error||(s.down?`↓ ${s.down.toFixed(1)} · ↑ ${s.up.toFixed(1)} Мбит/с · ${s.ping.toFixed(0)} мс`:''));
-}catch(e){$('host').textContent='агент не отвечает'}}
-async function refreshScreen(){try{show(await j('/api/screen/state'))}catch(e){}}
-$('flip').onchange=async e=>show(await post('/api/screen/set',{flip:e.target.checked?1:0}));
-let cityTimer=null;
-$('city').oninput=e=>{cityEdit=true;const q=e.target.value.trim();clearTimeout(cityTimer);if(q.length<2){fillCities(PRESET_CITIES);return}
-cityTimer=setTimeout(async()=>{try{const r=await j('/api/weather/cities?q='+encodeURIComponent(q));if(r&&r.cities&&r.cities.length)fillCities(r.cities.map(c=>[c.city,c.region,c.gm,c.mail]))}catch(err){}},250)};
-$('cityb').onclick=async()=>{const name=$('city').value.trim();if(!name)return;cityEdit=false;const hit=cityMap.get(name.toLowerCase());
-const res=await post('/api/screen/set',hit||{city:name});show(res);$('scrnote').textContent='Город погоды: '+(res.city||name)};
-$('vol').addEventListener('pointerdown',()=>volDrag=true);
-$('vol').addEventListener('input',e=>$('volv').textContent=e.target.value+'%');
-$('vol').addEventListener('change',async e=>{volDrag=false;await post('/api/volume',{level:+e.target.value})});
-$('mute').onclick=async()=>{await post('/api/volume',{toggle:true});refresh()};
-$('test').onclick=async()=>{await post('/api/speedtest',{});refresh()};
-$('auto').onchange=async e=>app(await post('/api/app',{autostart:e.target.checked}));
-function app(a){if(!a)return;$('auto').checked=!!a.autostart;$('auto').disabled=!a.available;
-$('appnote').textContent=a.available?'Программа живёт в трее: закрытие окна её не останавливает.':'Автозапуск доступен, когда программа запущена через «PC Monitor.bat».'}
-refresh();refreshScreen();j('/api/app').then(app).catch(()=>{});setInterval(refresh,1000);setInterval(refreshScreen,2000);
-</script></body></html>"""
+# панель — в panel.py
 
 
 def make_handler(agent: Agent):
@@ -1683,13 +1834,18 @@ def make_handler(agent: Agent):
             if self.command != "HEAD":
                 self.wfile.write(body)
 
+        def _local(self) -> bool:
+            return self.client_address[0] in ("127.0.0.1", "::1")
+
         def _json(self, obj, code: int = 200) -> None:
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
         def do_GET(self):  # noqa: N802
             path = urlparse(self.path).path
             if path in ("/", "/index.html"):
-                self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                self._send(200, PANEL_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            elif path == "/api/previews":
+                self._json({"ok": True, "previews": PREVIEWS})
             elif path == "/api/screen/state":
                 self._json(agent.screen_state())
             elif path == "/api/app":
@@ -1760,6 +1916,27 @@ def make_handler(agent: Agent):
                 self._json(data)
             elif path == "/api/volume":
                 self._json({"ok": True, **agent.volume.state()})
+            elif path == "/api/media/cover":
+                cid, _, png = agent.media.cover()
+                self._json({"ok": True, "id": cid, "img": png, "src": "winrt" if agent.media.available else "", "error": agent.media.error})
+            elif path == "/api/history":
+                self._json(agent.history.summary())
+            elif path == "/api/apps":
+                cfg = agent.launcher.config()
+                icons = []
+                for i in range(6):
+                    try:
+                        icons.append(agent.launcher.icon(i)[1])
+                    except Exception:
+                        icons.append("")
+                cfg["icons"] = icons
+                cfg["actions"] = {k: v[0] for k, v in ACTIONS.items()}
+                self._json({"ok": True, **cfg})
+            elif path == "/api/apps/start":
+                if not self._local():
+                    self._json({"ok": False, "error": "только с этого ПК"}, 403)
+                    return
+                self._json({"ok": True, "apps": start_menu_apps()})
             elif path == "/api/speedtest":
                 with agent.lock:
                     self._json({"ok": True, "speed": dict(agent.speed)})
@@ -1794,8 +1971,41 @@ def make_handler(agent: Agent):
                     self._json({"ok": False, "error": "bad request"}, 400)
                     return
                 self._json({"ok": True, "level": state["level"], "muted": state["muted"]})
+            elif path in ("/api/apps", "/api/apps/pick", "/api/apps/preview") and not self._local():
+                self._json({"ok": False, "error": "только с этого ПК"}, 403)
+            elif path == "/api/apps":
+                cfg = agent.launcher.set_config(data if isinstance(data, dict) else {})
+                self._json({"ok": True, **cfg})
+            elif path == "/api/apps/pick":
+                self._json({"ok": True, "path": pick_file()})
+            elif path == "/api/apps/preview":
+                it = data if isinstance(data, dict) else {}
+                try:
+                    self._json({"ok": True, "icon": to_png_b64(item_image(it))})
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)[:80]})
+            elif path == "/api/launch":
+                if not (self._local() or self.client_address[0] == agent.screen_ip):
+                    self._json({"ok": False, "error": "запуск — только с экрана или этого ПК"}, 403)
+                    return
+                ok, info = agent.launcher.launch(int(data.get("i", -1)) if isinstance(data, dict) else -1)
+                self._json({"ok": ok, "info": info}, 200 if ok else 400)
+            elif path == "/api/media":
+                key = str(data.get("key", "")) if isinstance(data, dict) else ""
+                if agent.media_key(key):
+                    self._json({"ok": True, "key": key})
+                else:
+                    self._json({"ok": False, "error": "key: prev | play | next"}, 400)
             elif path == "/api/screen/set":
                 self._json(agent.screen_set(data if isinstance(data, dict) else {}))
+            elif path == "/api/app" and isinstance(data, dict) and data.get("show"):
+                if not self._local():
+                    self._json({"ok": False}, 403)
+                    return
+                hook = globals().get("SHOW_HOOK")
+                if hook:
+                    threading.Thread(target=hook, daemon=True).start()
+                self._json({"ok": bool(hook)})
             elif path == "/api/app":
                 if isinstance(data, dict) and "autostart" in data:
                     autostart_set(bool(data["autostart"]))

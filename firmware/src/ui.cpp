@@ -33,7 +33,7 @@ struct Theme {
 };
 
 // Палитра меню берётся от текущего скина: скин задаёт вид всего интерфейса.
-static const Theme THEMES[12] = {
+static const Theme THEMES[13] = {
     {"Приборы", 0x0C0E11, 0x14181D, 0x171A1F, 0x20252B, 0x3A3F47, 0xFFFFFF, 0xAAB1BC,
      0xFF9F1C, 0x4CC9F0, 0x46E06A, 0xFFC53D, 0xE5484D, 0x1B2026, 0x14100A, false},
     {"Неон", 0x07060D, 0x120F24, 0x0F0D1C, 0x1B1830, 0x2E2850, 0xFFFFFF, 0xB9B3E0,
@@ -57,7 +57,8 @@ static const Theme THEMES[12] = {
     {"HUD", 0x0B0D12, 0x11151D, 0x121720, 0x1A202B, 0x27303D, 0xF4F7FC, 0x8995A7,
      0x42E6B5, 0x24D8FF, 0x42E6B5, 0xFFB454, 0xFF4E9B, 0x151C26, 0x0B0D12, false},
     {"Сканлайн", 0x080D12, 0x0E161D, 0x111A22, 0x17232C, 0x1D3440, 0xE9F6FF, 0x8297A5,
-     0x42D8FF, 0xFF4E9B, 0x42E6B5, 0xFFB454, 0xFF5577, 0x10212A, 0x080D12, false},
+     0x42D8FF, 0xFF4E9B, 0x42E6B5, 0xFFB454, 0xFF5577, 0x10212A, 0x080D12, false},    {"Звук", 0x06070C, 0x0C0E18, 0x0F1220, 0x161A2C, 0x262B42, 0xF2F4FF, 0x8C92B0,
+     0x22E3FF, 0xFF4DF5, 0x42E6B5, 0xFFB454, 0xFF4E6D, 0x10131F, 0x06070C, false},
 };
 
 static Theme TH;
@@ -111,6 +112,10 @@ static bool pendingRebuild = false;
 // Заставка: ПК молчит дольше 20 секунд (или включена принудительно для проверки).
 static bool idleShown = false, idleForce = false;
 static bool fcShown = false;      // экран прогноза погоды
+static bool mediaShown = false;   // медиапанель
+static bool nightShown = false;   // отчёт за 12 часов
+static bool launchShown = false;  // быстрый запуск
+static bool calShown = false;     // калибровка сенсора
 static uint32_t fcAt = 0;
 static uint32_t offlineSince = 0;
 static int nightCap = 100;
@@ -617,8 +622,8 @@ static void goHomeCb(lv_event_t*) {
 static void homeClickCb(lv_event_t*) {
   if (millis() - gestureAt < 600) return;   // это был свайп, а не касание
   // касание погоды открывает прогноз, касание прогноза — возвращает назад
-  if (fcShown) {
-    fcShown = false;
+  if (fcShown || nightShown) {
+    fcShown = nightShown = false;
     pendingRebuild = true;
     click();
     return;
@@ -627,6 +632,13 @@ static void homeClickCb(lv_event_t*) {
   lv_indev_get_point(lv_indev_active(), &pt);
   if (skinWeatherHit(pt.x, pt.y)) {
     fcShown = true;
+    fcAt = millis();
+    pendingRebuild = true;
+    click();
+    return;
+  }
+  if (skinClockHit(pt.x, pt.y)) {   // касание часов — отчёт за 12 часов
+    nightShown = true;
     fcAt = millis();
     pendingRebuild = true;
     click();
@@ -645,9 +657,47 @@ static void nextSkin(int dir) {
   settingsSave();
 }
 
+// Кнопки медиапанели
+static void mediaKey(int k) {
+  click();
+  if (k >= 0 && k <= 2) {
+    monitorRequestMedia(k);
+  } else if (k == 3 || k == 5) {
+    PcStats pc = monitorSnapshot();
+    monitorRequestVolume(constrain(pc.volume + (k == 3 ? -5 : 5), 0, 100));
+  } else if (k == 4) {
+    monitorRequestMute(!monitorSnapshot().muted);
+  } else if (k == 9) {
+    mediaShown = launchShown = false;
+    pendingRebuild = true;
+  } else if (k >= 100 && k < 100 + APP_MAX) {
+    monitorRequestLaunch(k - 100);
+  }
+}
+
+static void mediaGestureCb(lv_event_t*) {
+  lv_indev_t* in = lv_indev_active();
+  lv_dir_t d = lv_indev_get_gesture_dir(in);
+  if (d != LV_DIR_TOP && d != LV_DIR_BOTTOM) return;
+  mediaShown = launchShown = false;
+  pendingRebuild = true;
+  lv_indev_wait_release(in);
+  click();
+}
+
 static void homeGestureCb(lv_event_t*) {
   lv_indev_t* in = lv_indev_active();
   lv_dir_t d = lv_indev_get_gesture_dir(in);
+  if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх — медиапанель, вниз — быстрый запуск
+    gestureAt = millis();
+    fcShown = nightShown = false;
+    mediaShown = d == LV_DIR_TOP;
+    launchShown = d == LV_DIR_BOTTOM;
+    pendingRebuild = true;
+    lv_indev_wait_release(in);
+    click();
+    return;
+  }
   if (d != LV_DIR_LEFT && d != LV_DIR_RIGHT) return;
   gestureAt = millis();
   nextSkin(d == LV_DIR_LEFT ? 1 : -1);
@@ -1008,6 +1058,124 @@ static void updateNav() {
   }
 }
 
+// ------------------------------------------------------------------ калибровка сенсора
+// 4 крестика по углам; для каждого — среднее сырых координат, затем прямые по МНК:
+// x = a·rawY + b, y = c·rawX + d (в координатах экрана без поворота).
+static const int CAL_PT[4][2] = {{30, 30}, {290, 30}, {290, 210}, {30, 210}};
+static struct {
+  lv_timer_t* timer;
+  lv_obj_t *cross, *msg;
+  int idx, n;
+  long sx, sy;
+  bool waitUp;
+  float raw[4][2];
+  uint32_t doneAt;
+} CAL;
+
+static void calPlace() {
+  lv_obj_set_pos(CAL.cross, CAL_PT[CAL.idx][0] - 15, CAL_PT[CAL.idx][1] - 15);
+  lv_label_set_text_fmt(CAL.msg, "Калибровка сенсора\nКоснитесь центра крестика (%d из 4)", CAL.idx + 1);
+}
+
+static bool calFit() {
+  bool fl = gSet.flip;
+  float mx = 0, my = 0, mrx = 0, mry = 0;
+  float ux[4], uy[4];
+  for (int i = 0; i < 4; i++) {
+    ux[i] = fl ? LCD_W - 1 - CAL_PT[i][0] : CAL_PT[i][0];
+    uy[i] = fl ? LCD_H - 1 - CAL_PT[i][1] : CAL_PT[i][1];
+    mx += ux[i] / 4; my += uy[i] / 4; mrx += CAL.raw[i][0] / 4; mry += CAL.raw[i][1] / 4;
+  }
+  float cxy = 0, vy = 0, cyx = 0, vx = 0;
+  for (int i = 0; i < 4; i++) {
+    cxy += (CAL.raw[i][1] - mry) * (ux[i] - mx);
+    vy += (CAL.raw[i][1] - mry) * (CAL.raw[i][1] - mry);
+    cyx += (CAL.raw[i][0] - mrx) * (uy[i] - my);
+    vx += (CAL.raw[i][0] - mrx) * (CAL.raw[i][0] - mrx);
+  }
+  if (vy < 1 || vx < 1) return false;
+  float a = cxy / vy, c = cyx / vx;
+  if (fabsf(a) < 0.3f || fabsf(a) > 3 || fabsf(c) < 0.3f || fabsf(c) > 3) return false;
+  settingsLock();
+  gSet.calOk = true;
+  gSet.calXA = a;
+  gSet.calXB = mx - a * mry;
+  gSet.calYA = c;
+  gSet.calYB = my - c * mrx;
+  settingsUnlock();
+  settingsSave();
+  displaySetCal(true, gSet.calXA, gSet.calXB, gSet.calYA, gSet.calYB);
+  return true;
+}
+
+static void calTick(lv_timer_t*) {
+  if (CAL.doneAt) {
+    if (millis() - CAL.doneAt > 1800) {
+      displayTouchHold(false);
+      calShown = false;
+      pendingRebuild = true;
+      CAL.doneAt = 0;
+    }
+    return;
+  }
+  int rx, ry;
+  bool down = displayTouchRaw(&rx, &ry);
+  uiActivity();
+  if (CAL.waitUp) {
+    if (!down) CAL.waitUp = false;
+    return;
+  }
+  if (down) {
+    CAL.sx += rx;
+    CAL.sy += ry;
+    CAL.n++;
+    return;
+  }
+  if (CAL.n < 3) return;
+  CAL.raw[CAL.idx][0] = (float)CAL.sx / CAL.n;
+  CAL.raw[CAL.idx][1] = (float)CAL.sy / CAL.n;
+  CAL.sx = CAL.sy = 0;
+  CAL.n = 0;
+  click();
+  if (++CAL.idx < 4) {
+    calPlace();
+    return;
+  }
+  bool ok = calFit();
+  lv_obj_add_flag(CAL.cross, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(CAL.msg, ok ? "Готово! Сенсор откалиброван" : "Не получилось — запустите калибровку ещё раз");
+  CAL.doneAt = millis();
+}
+
+static void buildCalibration() {
+  lv_obj_set_style_bg_color(scr, C(0x0B0D12), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  CAL.msg = lv_label_create(scr);
+  lv_obj_set_width(CAL.msg, 280);
+  lv_obj_set_style_text_align(CAL.msg, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(CAL.msg, C(0xF2F4F7), 0);
+  lv_obj_set_style_text_font(CAL.msg, fMedB, 0);
+  lv_obj_align(CAL.msg, LV_ALIGN_CENTER, 0, 0);
+  CAL.cross = obj(scr, 0, 0, 30, 30);
+  lv_obj_set_style_bg_opa(CAL.cross, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(CAL.cross, 2, 0);
+  lv_obj_set_style_border_color(CAL.cross, C(0xFF9F1C), 0);
+  lv_obj_set_style_radius(CAL.cross, LV_RADIUS_CIRCLE, 0);
+  lv_obj_t* h = obj(CAL.cross, -2, 12, 30, 2);
+  lv_obj_set_style_bg_color(h, C(0xFF9F1C), 0);
+  lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
+  lv_obj_t* v = obj(CAL.cross, 12, -2, 2, 30);
+  lv_obj_set_style_bg_color(v, C(0xFF9F1C), 0);
+  lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
+  CAL.idx = CAL.n = 0;
+  CAL.sx = CAL.sy = 0;
+  CAL.waitUp = true;
+  CAL.doneAt = 0;
+  calPlace();
+  displayTouchHold(true);
+  CAL.timer = lv_timer_create(calTick, 20, nullptr);
+}
+
 static void buildAll() {
   settingsLock();
   themeIdx = constrain((int)gSet.skin, 0, skinCount() - 1);
@@ -1022,11 +1190,32 @@ static void buildAll() {
   lv_obj_set_style_pad_all(scr, 0, 0);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
   lv_screen_load(scr);
+  if (CAL.timer) {
+    lv_timer_delete(CAL.timer);
+    CAL.timer = nullptr;
+  }
+  if (calShown) {
+    buildCalibration();
+    return;
+  }
   if (home) {
     settingsLock();
     int s = gSet.skin;
     settingsUnlock();
-    if (fcShown) skinBuildForecast(scr, s);
+    if (launchShown) {
+      skinBuildLaunch(scr, s, mediaKey);
+      lv_obj_add_event_cb(scr, mediaGestureCb, LV_EVENT_GESTURE, nullptr);
+      skinUpdate(monitorSnapshot(), monitorWifi());
+      return;
+    }
+    if (mediaShown) {
+      skinBuildMedia(scr, s, mediaKey);
+      lv_obj_add_event_cb(scr, mediaGestureCb, LV_EVENT_GESTURE, nullptr);
+      skinUpdate(monitorSnapshot(), monitorWifi());
+      return;
+    }
+    if (nightShown) skinBuildNight(scr, s);
+    else if (fcShown) skinBuildForecast(scr, s);
     else if (idleShown) skinBuildIdle(scr, s);
     else skinBuild(scr, s);
     // прозрачный слой поверх скина: касание — меню, свайп — другой скин
@@ -1356,7 +1545,7 @@ static void refreshSettingsPage(const PcStats& pc, const WifiInfo& w) {
   s += String(ESP.getFreePsram() / 1024);
   s += "K · экран ";
   s += String(millis() / 1000);
-  s += " с · v1.5";
+  s += " с · v1.7";
   if (W.infoSet) lv_label_set_text(W.infoSet, s.c_str());
 }
 
@@ -1412,7 +1601,7 @@ static bool homeBlinkOnly() {
   settingsLock();
   int s = gSet.skin;
   settingsUnlock();
-  return home && !idleShown && !fcShown && s == 5;
+  return home && !idleShown && !fcShown && !mediaShown && !nightShown && !launchShown && s == 5;
 }
 
 // ------------------------------------------------------------------ публичное
@@ -1425,6 +1614,7 @@ void uiInit() {
   analogSetPinAttenuation(BAT_PIN, ADC_11db);
   lastActivity = millis();
   displaySetFlip(gSet.flip);
+  if (gSet.calOk) displaySetCal(true, gSet.calXA, gSet.calXB, gSet.calYA, gSet.calYB);
   buildAll();
   displayBacklight(gSet.brightness);
 }
@@ -1465,11 +1655,16 @@ void uiLoop() {
   bool wantIdle = idleForce || (offlineSince && now - offlineSince > 20000UL);
   if (home && wantIdle != idleShown) {
     idleShown = wantIdle;
-    if (!fcShown) pendingRebuild = true;
+    if (!fcShown && !mediaShown && !nightShown && !launchShown) pendingRebuild = true;
+  }
+  // медиапанель закрывается через 30 с без касаний
+  if ((mediaShown || launchShown) && (!home || now - lastActivity > 30000UL)) {
+    mediaShown = launchShown = false;
+    if (home) pendingRebuild = true;
   }
   // прогноз сам закрывается через 30 с
-  if (fcShown && (!home || now - fcAt > 30000UL)) {
-    fcShown = false;
+  if ((fcShown || nightShown) && (!home || now - fcAt > 30000UL)) {
+    fcShown = nightShown = false;
     if (home) pendingRebuild = true;
   }
   // ночью (23:00–07:00) заставка светит не ярче 10 %
@@ -1539,8 +1734,56 @@ void uiActivity() {
   }
 }
 
+void uiShowNight(bool on) {
+  nightShown = on;
+  fcShown = mediaShown = launchShown = false;
+  fcAt = millis();
+  home = true;
+  pendingRebuild = true;
+}
+
+void uiShowScreen(const char* n) {
+  if (!strcmp(n, "fc")) uiShowForecast(true);
+  else if (!strcmp(n, "media")) uiShowMedia(true);
+  else if (!strcmp(n, "night")) uiShowNight(true);
+  else if (!strcmp(n, "launch")) uiShowLaunch(true);
+  else if (!strcmp(n, "idle")) uiForceIdle(true);
+  else if (!strcmp(n, "cal")) {
+    calShown = true;
+    home = true;
+    pendingRebuild = true;
+  } else if (!strcmp(n, "calreset")) {
+    settingsLock();
+    gSet.calOk = false;
+    settingsUnlock();
+    settingsSave();
+    displaySetCal(false, 0, 0, 0, 0);
+  }
+  else if (!strcmp(n, "home")) {
+    fcShown = nightShown = mediaShown = launchShown = false;
+    uiForceIdle(false);
+  }
+}
+
+void uiShowLaunch(bool on) {
+  launchShown = on;
+  fcShown = nightShown = mediaShown = false;
+  home = true;
+  pendingRebuild = true;
+  uiActivity();
+}
+
+void uiShowMedia(bool on) {
+  mediaShown = on;
+  fcShown = nightShown = launchShown = false;
+  home = true;
+  pendingRebuild = true;
+  uiActivity();
+}
+
 void uiShowForecast(bool on) {
   fcShown = on;
+  nightShown = mediaShown = launchShown = false;
   fcAt = millis();
   home = true;
   pendingRebuild = true;
@@ -1584,6 +1827,7 @@ void uiSetSkin(int idx) {
   gSet.skin = (uint8_t)constrain(idx, 0, skinCount() - 1);
   settingsUnlock();
   settingsSave();
+  fcShown = nightShown = mediaShown = launchShown = false;   // смена скина — сразу на главный экран
   home = true;
   pendingRebuild = true;
   uiActivity();

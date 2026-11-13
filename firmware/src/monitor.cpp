@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/base64.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -28,9 +29,11 @@ static bool wasOnline = false;
 static volatile int reqVolume = -1;
 static volatile int reqMute = -1;
 static volatile bool reqSpeed = false;
+static volatile int reqMedia = -1;
+static volatile int reqLaunch = -1;
 
 // ---- связь по USB-кабелю (тот же порт, что и отладочный вывод)
-static const size_t USB_BUF = 4096;
+static const size_t USB_BUF = 16384;   // строка с иконкой — ~9 КБ
 static char* usbBuf = nullptr;
 static size_t usbLen = 0;
 static bool usbOverflow = false;
@@ -153,6 +156,19 @@ static void applyCommands() {
     if (usbActive()) usbSend(String("{\"cmd\":\"mute\",\"mute\":") + (mute ? "true" : "false") + "}");
     else postJson("/api/volume", String("{\"mute\":") + (mute ? "true" : "false") + "}");
   }
+  int mk = reqMedia;
+  if (mk >= 0) {
+    reqMedia = -1;
+    static const char* keys[3] = {"prev", "play", "next"};
+    if (usbActive()) usbSend(String("{\"cmd\":\"media\",\"key\":\"") + keys[mk] + "\"}");
+    else postJson("/api/media", String("{\"key\":\"") + keys[mk] + "\"}");
+  }
+  int li = reqLaunch;
+  if (li >= 0) {
+    reqLaunch = -1;
+    if (usbActive()) usbSend("{\"cmd\":\"launch\",\"i\":" + String(li) + "}");
+    else postJson("/api/launch", "{\"i\":" + String(li) + "}");
+  }
   if (reqSpeed) {
     reqSpeed = false;
     if (usbActive()) usbSend("{\"cmd\":\"speedtest\"}");
@@ -213,6 +229,14 @@ static void parseStats(JsonDocument& doc, float linkMs, bool viaUsb) {
 
   n.volume = doc["volumeLevel"] | 0;
   n.muted = doc["muted"] | false;
+  JsonObject md = doc["media"];
+  if (!md.isNull()) {
+    copyStr(n.mediaApp, sizeof(n.mediaApp), md["app"] | "");
+    copyStr(n.mediaTitle, sizeof(n.mediaTitle), md["title"] | "");
+    copyStr(n.mediaArtist, sizeof(n.mediaArtist), md["artist"] | "");
+    n.mediaCover = md["cover"] | 0UL;
+    n.mediaPlaying = md["playing"] | false;
+  }
   n.pingMs = doc["ping"] | 0.0f;
 
   JsonArray top = doc["top"];
@@ -355,6 +379,150 @@ static void loadForecast() {
   p.end();
 }
 
+// ------------------------------------------------------------------ история
+static History hist;
+
+static void fillArr(JsonVariant a, int16_t* out) {
+  for (int i = 0; i < 72; i++) out[i] = -1;
+  if (!a.is<JsonArray>()) return;
+  int i = 0;
+  for (JsonVariant v : a.as<JsonArray>()) {
+    if (i >= 72) break;
+    out[i++] = v | -1;
+  }
+}
+
+static void handleHistory(JsonDocument& doc) {
+  static History tmp;      // разбираем вне блокировки, копируем под ней
+  History* h = &tmp;
+  *h = History();
+  h->ok = true;
+  h->t0 = doc["t0"] | 0UL;
+  h->step = doc["step"] | 600;
+  fillArr(doc["cpu"], h->cpu);
+  fillArr(doc["gpu"], h->gpu);
+  fillArr(doc["ct"], h->ct);
+  fillArr(doc["gt"], h->gt);
+  fillArr(doc["net"], h->net);
+  h->hot = doc["hot"] | -1;
+  h->hotT = doc["hotT"] | 0UL;
+  h->onMin = doc["onMin"] | 0;
+  copyStr(h->top, sizeof(h->top), doc["top"] | "");
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  hist = *h;
+  xSemaphoreGive(statsMux);
+}
+
+bool monitorHistory(History& out) {
+  if (!statsMux) return false;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  out = hist;
+  xSemaphoreGive(statsMux);
+  return out.ok;
+}
+
+// ------------------------------------------------------------------ быстрый запуск
+static AppTile apps[APP_MAX];
+static uint8_t* appIcons[APP_MAX] = {nullptr};
+static int appN = 0;
+static uint32_t appVer = 0, appRev = 0;
+static const size_t ICON_BYTES = APP_ICON * APP_ICON * 3;
+
+static void handleApps(JsonDocument& doc) {
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  appVer = doc["ver"] | 0UL;
+  appN = constrain((int)(doc["n"] | 0), 0, APP_MAX);
+  int i = 0;
+  for (JsonVariant it : doc["items"].as<JsonArray>()) {
+    if (i >= APP_MAX) break;
+    copyStr(apps[i].name, sizeof(apps[i].name), it["name"] | "");
+    apps[i].confirm = it["confirm"] | false;
+    apps[i].icon = nullptr;   // новые иконки придут следом
+    i++;
+  }
+  appRev++;
+  xSemaphoreGive(statsMux);
+}
+
+static void handleIcon(JsonDocument& doc) {
+  int i = doc["icon"] | -1;
+  if (i < 0 || i >= APP_MAX) return;
+  if ((doc["ver"] | 0UL) != appVer) return;
+  const char* b64 = doc["d"] | "";
+  if (!appIcons[i]) appIcons[i] = (uint8_t*)heap_caps_malloc(ICON_BYTES, MALLOC_CAP_SPIRAM);
+  if (!appIcons[i]) return;
+  // в отдельный буфер: экран может как раз рисовать старую иконку
+  static uint8_t* tmp = nullptr;
+  if (!tmp) tmp = (uint8_t*)heap_caps_malloc(ICON_BYTES, MALLOC_CAP_SPIRAM);
+  if (!tmp) return;
+  size_t out = 0;
+  if (mbedtls_base64_decode(tmp, ICON_BYTES, &out, (const unsigned char*)b64, strlen(b64)) != 0 || out != ICON_BYTES)
+    return;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  memcpy(appIcons[i], tmp, ICON_BYTES);
+  apps[i].icon = appIcons[i];
+  appRev++;
+  xSemaphoreGive(statsMux);
+}
+
+// какие иконки уже есть (бит i — плитка i); агент досылает недостающие
+static uint32_t appMask() {
+  uint32_t m = 0;
+  for (int i = 0; i < APP_MAX; i++)
+    if (apps[i].icon) m |= 1u << i;
+  return m;
+}
+
+// ------------------------------------------------------------------ обложка
+static uint8_t* coverBuf = nullptr;
+static uint32_t coverId = 0;
+
+static void handleCover(JsonDocument& doc) {
+  uint32_t id = doc["cover"] | 0UL;
+  const size_t BYTES = COVER_PX * COVER_PX * 2;
+  if (!id) {
+    xSemaphoreTake(statsMux, portMAX_DELAY);
+    coverId = 0;
+    xSemaphoreGive(statsMux);
+    return;
+  }
+  const char* b64 = doc["d"] | "";
+  static uint8_t* tmp = nullptr;
+  if (!tmp) tmp = (uint8_t*)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
+  if (!coverBuf) coverBuf = (uint8_t*)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
+  if (!tmp || !coverBuf) return;
+  size_t out = 0;
+  if (mbedtls_base64_decode(tmp, BYTES, &out, (const unsigned char*)b64, strlen(b64)) != 0 || out != BYTES) return;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  memcpy(coverBuf, tmp, BYTES);
+  coverId = id;
+  st.rev++;
+  xSemaphoreGive(statsMux);
+}
+
+const uint8_t* monitorCover(uint32_t* id) {
+  if (!statsMux) return nullptr;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  uint32_t i = coverId;
+  xSemaphoreGive(statsMux);
+  if (id) *id = i;
+  return i ? coverBuf : nullptr;
+}
+
+int monitorApps(AppTile* out, uint32_t* rev) {
+  if (!statsMux) return 0;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  int n = appN;
+  for (int i = 0; i < APP_MAX; i++) out[i] = apps[i];
+  if (rev) *rev = appRev;
+  xSemaphoreGive(statsMux);
+  return n;
+}
+
+void monitorRequestLaunch(int i) {
+  if (i >= 0 && i < APP_MAX) reqLaunch = i;
+}
+
 // ------------------------------------------------------------------ USB
 static void handleUsbLine(char* line, size_t len) {
   if (line[0] != '{') return;
@@ -367,10 +535,28 @@ static void handleUsbLine(char* line, size_t len) {
       monitorSetCity(s["city"] | (const char*)nullptr, s["gm"] | (const char*)nullptr, s["mail"] | (const char*)nullptr);
     }
     uiRequest(s["skin"] | -1, s["flip"] | -1);
+    const char* sh = s["show"] | "";
+    if (sh[0]) uiShowScreen(sh);
     return;
   }
   if (doc["wx"] | 0) {      // почасовой прогноз от компаньона
     handleForecast(doc);
+    return;
+  }
+  if (doc["hist"] | 0) {    // последние 12 часов
+    handleHistory(doc);
+    return;
+  }
+  if (doc["apps"] | 0) {    // плитки быстрого запуска
+    handleApps(doc);
+    return;
+  }
+  if (!doc["icon"].isNull()) {
+    handleIcon(doc);
+    return;
+  }
+  if (!doc["cover"].isNull()) {
+    handleCover(doc);
     return;
   }
   if (!(doc["ok"] | false)) return;
@@ -706,9 +892,9 @@ static void netTask(void*) {
     if (now >= nextHello) {
       nextHello = now + 5000;
       settingsLock();
-      String hello = "{\"hello\":1,\"fw\":\"1.5.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
+      String hello = "{\"hello\":1,\"fw\":\"1.7.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
                      ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"city\":\"" + gSet.cityName +
-                     "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + "}";
+                     "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + ",\"av\":" + String(appVer) + ",\"im\":" + String(appMask()) + ",\"cv\":" + String(coverId) + "}";
       settingsUnlock();
       usbSend(hello);
     }
@@ -785,6 +971,17 @@ void monitorRequestMute(bool mute) {
 }
 
 void monitorRequestSpeedtest() { reqSpeed = true; }
+
+void monitorRequestMedia(int key) {
+  if (key < 0 || key > 2) return;
+  reqMedia = key;
+  if (key == 1 && statsMux) {   // плей/пауза — сразу меняем значок, ПК подтвердит
+    xSemaphoreTake(statsMux, portMAX_DELAY);
+    st.mediaPlaying = !st.mediaPlaying;
+    st.rev++;
+    xSemaphoreGive(statsMux);
+  }
+}
 
 void monitorForgetAgent() {
   settingsLock();

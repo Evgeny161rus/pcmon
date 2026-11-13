@@ -43,6 +43,25 @@ jobs:
           name: PCMonitor-firmware
           path: out/*.bin
 
+  case:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render case STL
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq openscad xvfb >/dev/null
+          mkdir -p out
+          for p in shell back; do openscad -o out/pcmon-case-$p.stl -D "part=\"$p\"" case/pcmon_case.scad; done
+          xvfb-run -a openscad -o out/pcmon-case-preview.png --imgsize=1200,900 --viewall --autocenter --colorscheme=Tomorrow -D 'part="asm"' case/pcmon_case.scad || true
+          for p in shell back asm; do xvfb-run -a openscad --render -o out/prev-$p.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,60,0,35,0 -D "part=\"$p\"" case/pcmon_case.scad || true; done
+          xvfb-run -a openscad --render -o out/prev-side.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,90,0,90,0 -D 'part="asm"' case/pcmon_case.scad || true
+          ls -la out
+          for f in out/prev-*.png; do echo "B64 $f $(base64 -w0 $f)"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCMonitor-case
+          path: out/*
+
   windows:
     runs-on: windows-latest
     steps:
@@ -53,16 +72,28 @@ jobs:
       - name: Build EXE and portable folder
         shell: cmd
         run: build_exe.bat
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress | Out-Null }
+          New-Item -ItemType Directory -Force build | Out-Null
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile build\MicrosoftEdgeWebview2Setup.exe
+          $ver = (Select-String -Path agent\sysmon_agent.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVer=$ver" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: PCMonitor-Windows
           path: |
+            dist/PCMonitor-Setup.exe
             dist/PCMonitor.exe
             dist/PCMonitor-folder.zip
 
   release:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [firmware, windows]
+    needs: [firmware, windows, case]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -70,14 +101,16 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Create checksums
-        run: cd dist && sha256sum PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
+        run: cd dist && sha256sum PCMonitor-Setup.exe PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
       - name: Update latest download
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: PC Monitor — последняя сборка
           body: |
-            **PCMonitor.exe** — программа для Windows, Python не нужен. Если Microsoft Defender подозрительно реагирует на однофайловую сборку, скачайте **PCMonitor-folder.zip**, распакуйте папку целиком и запустите PCMonitor.exe внутри.
+            **PCMonitor-Setup.exe** — установщик программы для Windows: ставится без прав администратора, создаёт ярлык в «Пуске», по желанию — автозапуск; всё нужное (включая движок окна WebView2) подтягивает сам. Python не нужен.
+
+            **PCMonitor.exe** — та же программа одним файлом, без установки. Если Microsoft Defender подозрительно реагирует на однофайловую сборку, скачайте **PCMonitor-folder.zip**, распакуйте папку целиком и запустите PCMonitor.exe внутри.
 
             **pcmon-firmware-full.bin** — прошивка платы целиком, пишется с адреса 0x0 (например, `esptool.py --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin` или любым веб-прошивальщиком ESP32).
             **pcmon-firmware-app.bin** — только приложение, с адреса 0x10000: для обновления, когда загрузчик уже стоит.
@@ -86,6 +119,7 @@ jobs:
           make_latest: true
           overwrite_files: true
           files: |
+            dist/PCMonitor-Setup.exe
             dist/PCMonitor.exe
             dist/PCMonitor-folder.zip
             dist/pcmon-firmware-full.bin

@@ -62,6 +62,12 @@ struct PcStats {
   char speedStage[32] = "";
   char speedError[48] = "";
 
+  // что сейчас звучит на ПК
+  char mediaApp[40] = "";
+  char mediaTitle[72] = "";
+  char mediaArtist[64] = "";
+  uint32_t mediaCover = 0;      // id обложки от ПК, 0 — нет
+  bool mediaPlaying = false;
   char top1[28] = "";
   float top1cpu = 0;
   char top2[28] = "";
@@ -86,6 +92,34 @@ struct Weather {
   int code = 0;          // код погоды WMO
   uint32_t atMs = 0;
 };
+// Последние 12 часов от ПК: 72 отрезка по 10 минут; -1 — ПК был выключен.
+struct History {
+  bool ok = false;
+  uint32_t t0 = 0;
+  uint16_t step = 600;
+  int16_t cpu[72], gpu[72], ct[72], gt[72], net[72];
+  int16_t hot = -1;
+  uint32_t hotT = 0;
+  uint16_t onMin = 0;
+  char top[28] = "";
+};
+bool monitorHistory(History& out);
+
+// Быстрый запуск: плитки от ПК (4–6), иконки 48×48 в формате LVGL RGB565A8.
+static const int APP_MAX = 6;
+static const int APP_ICON = 48;
+struct AppTile {
+  char name[40] = "";             // до 18 букв (UTF-8)
+  bool confirm = false;          // действие с подтверждением (выключение, перезагрузка)
+  const uint8_t* icon = nullptr;  // nullptr — иконка ещё не пришла
+};
+int monitorApps(AppTile* out, uint32_t* ver);   // число плиток, 0 — список ещё не получен
+void monitorRequestLaunch(int i);
+
+// Обложка трека 72×72 RGB565 (nullptr — нет). id совпадает с PcStats::mediaCover, когда дошла.
+static const int COVER_PX = 72;
+const uint8_t* monitorCover(uint32_t* id);
+
 Weather monitorWeather();
 // Прогноз от ПК на час now+ahead (0 = текущий час). false — прогноза на этот час нет.
 bool monitorForecast(int ahead, Weather& out);
@@ -98,6 +132,8 @@ WifiInfo monitorWifi();
 void monitorRequestVolume(int level);
 void monitorRequestMute(bool mute);
 void monitorRequestSpeedtest();
+// Медиаклавиша на ПК: 0 — предыдущий трек, 1 — плей/пауза, 2 — следующий.
+void monitorRequestMedia(int key);
 void monitorForgetAgent();
 bool monitorAgentConfigured();
 void monitorSetCity(const char* name, const char* gm, const char* mail);

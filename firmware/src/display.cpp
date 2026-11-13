@@ -104,6 +104,27 @@ static void touchInit() {
 
 static bool wasPressed = false;
 static bool swallow = false;
+static bool calOn = false, holdTouch = false;
+static float cXA = TOUCH_CAL_X_A, cXB = TOUCH_CAL_X_B, cYA = TOUCH_CAL_Y_A, cYB = TOUCH_CAL_Y_B;
+static volatile int rawX = 0, rawY = 0;
+static volatile bool rawDown = false;
+
+bool displayTouchRaw(int* rx, int* ry) {
+  if (rx) *rx = rawX;
+  if (ry) *ry = rawY;
+  return rawDown;
+}
+
+void displaySetCal(bool on, float xa, float xb, float ya, float yb) {
+  calOn = on;
+  if (on) {
+    cXA = xa; cXB = xb; cYA = ya; cYB = yb;
+  } else {
+    cXA = TOUCH_CAL_X_A; cXB = TOUCH_CAL_X_B; cYA = TOUCH_CAL_Y_A; cYB = TOUCH_CAL_Y_B;
+  }
+}
+
+void displayTouchHold(bool hold) { holdTouch = hold; }
 
 static void touchRead(lv_indev_t*, lv_indev_data_t* data) {
   static int16_t lx = 160, ly = 120;
@@ -118,14 +139,18 @@ static void touchRead(lv_indev_t*, lv_indev_data_t* data) {
       if (n > 0) {
         int rx = ((b[1] & 0x0F) << 8) | b[2];
         int ry = ((b[3] & 0x0F) << 8) | b[4];
-        float fx = TOUCH_CAL_X_A * ry + TOUCH_CAL_X_B;
-        float fy = TOUCH_CAL_Y_A * rx + TOUCH_CAL_Y_B;
+        rawX = rx;
+        rawY = ry;
+        float fx = cXA * ry + cXB;
+        float fy = cYA * rx + cYB;
+        if (!calOn) {   // заводская формула; своя калибровка уже учитывает зеркалирование
 #ifdef TOUCH_MIRROR_X
-        fx = LCD_W - 1 - fx;
+          fx = LCD_W - 1 - fx;
 #endif
 #ifdef TOUCH_MIRROR_Y
-        fy = LCD_H - 1 - fy;
+          fy = LCD_H - 1 - fy;
 #endif
+        }
         lx = (int16_t)constrain((int)lroundf(fx), 0, LCD_W - 1);
         ly = (int16_t)constrain((int)lroundf(fy), 0, LCD_H - 1);
         if (flipped) {
@@ -137,6 +162,14 @@ static void touchRead(lv_indev_t*, lv_indev_data_t* data) {
     } else {
       down = false;
     }
+    rawDown = down;
+  }
+  if (holdTouch) {
+    data->point.x = lx;
+    data->point.y = ly;
+    data->state = LV_INDEV_STATE_RELEASED;
+    wasPressed = down;
+    return;
   }
 
   if (down && !wasPressed) {

@@ -21,6 +21,11 @@ void settingsBegin() {
   gSet.skin = prefs.getUChar("skin", 0);
   gSet.flip = prefs.getBool("flip", false);
   gSet.alertOn = prefs.getBool("al_on", true);
+  gSet.calOk = prefs.getBool("cal_ok", false);
+  gSet.calXA = prefs.getFloat("cal_xa", 0);
+  gSet.calXB = prefs.getFloat("cal_xb", 0);
+  gSet.calYA = prefs.getFloat("cal_ya", 0);
+  gSet.calYB = prefs.getFloat("cal_yb", 0);
   gSet.alertCpu = prefs.getUChar("al_cpu", 85);
   gSet.alertGpu = prefs.getUChar("al_gpu", 83);
   gSet.alertRam = prefs.getUChar("al_ram", 95);
@@ -44,6 +49,11 @@ bool settingsSave() {
   prefs.putUChar("skin", gSet.skin);
   prefs.putBool("flip", gSet.flip);
   prefs.putBool("al_on", gSet.alertOn);
+  prefs.putBool("cal_ok", gSet.calOk);
+  prefs.putFloat("cal_xa", gSet.calXA);
+  prefs.putFloat("cal_xb", gSet.calXB);
+  prefs.putFloat("cal_ya", gSet.calYA);
+  prefs.putFloat("cal_yb", gSet.calYB);
   prefs.putUChar("al_cpu", gSet.alertCpu);
   prefs.putUChar("al_gpu", gSet.alertGpu);
   prefs.putUChar("al_ram", gSet.alertRam);

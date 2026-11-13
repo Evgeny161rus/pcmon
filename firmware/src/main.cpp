@@ -19,7 +19,7 @@
 #include "settings.h"
 #include "ui.h"
 
-static const char* FW_VERSION = "1.5.0";
+static const char* FW_VERSION = "1.7.0";
 
 enum Phase { NO_CREDS, CONNECTING, CONNECTED, FAILED_AP };
 static Phase phase = NO_CREDS;
