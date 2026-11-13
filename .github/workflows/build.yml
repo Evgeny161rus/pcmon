@@ -43,6 +43,22 @@ jobs:
           name: PCMonitor-firmware
           path: out/*.bin
 
+  case:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render case STL
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq openscad xvfb >/dev/null
+          mkdir -p out
+          for p in shell back stand; do openscad -o out/pcmon-case-$p.stl -D "part=\"$p\"" case/pcmon_case.scad; done
+          xvfb-run -a openscad -o out/pcmon-case-preview.png --imgsize=1200,900 --viewall --autocenter --colorscheme=Tomorrow -D 'part="all"' case/pcmon_case.scad || true
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCMonitor-case
+          path: out/*
+
   windows:
     runs-on: windows-latest
     steps:
@@ -74,7 +90,7 @@ jobs:
 
   release:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [firmware, windows]
+    needs: [firmware, windows, case]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -82,7 +98,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Create checksums
-        run: cd dist && sha256sum PCMonitor-Setup.exe PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
+        run: cd dist && sha256sum pcmon-case-*.stl PCMonitor-Setup.exe PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
       - name: Update latest download
         uses: softprops/action-gh-release@v2
         with:
@@ -96,6 +112,8 @@ jobs:
             **pcmon-firmware-full.bin** — прошивка платы целиком, пишется с адреса 0x0 (например, `esptool.py --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin` или любым веб-прошивальщиком ESP32).
             **pcmon-firmware-app.bin** — только приложение, с адреса 0x10000: для обновления, когда загрузчик уже стоит.
 
+            **pcmon-case-shell.stl / back.stl / stand.stl** — корпус: рамка с окном экрана, задняя крышка (4 винта M3 через отверстия платы) и подставка с наклоном 20°. Исходник для своих размеров — case/pcmon_case.scad (OpenSCAD).
+
             Контрольные суммы — в SHA256.txt. Сборка исходников: ${{ github.sha }}.
           make_latest: true
           overwrite_files: true
@@ -105,4 +123,7 @@ jobs:
             dist/PCMonitor-folder.zip
             dist/pcmon-firmware-full.bin
             dist/pcmon-firmware-app.bin
+            dist/pcmon-case-shell.stl
+            dist/pcmon-case-back.stl
+            dist/pcmon-case-stand.stl
             dist/SHA256.txt
