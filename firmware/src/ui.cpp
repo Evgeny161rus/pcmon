@@ -1688,6 +1688,7 @@ void uiSetSkin(int idx) {
   gSet.skin = (uint8_t)constrain(idx, 0, skinCount() - 1);
   settingsUnlock();
   settingsSave();
+  fcShown = nightShown = mediaShown = launchShown = false;   // смена скина — сразу на главный экран
   home = true;
   pendingRebuild = true;
   uiActivity();
