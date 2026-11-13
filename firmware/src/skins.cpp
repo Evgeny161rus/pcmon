@@ -86,10 +86,23 @@ struct State {
   // ретро
   lv_obj_t *vfd[3], *led[2][12], *ledLbl[2], *rx, *tx, *vol, *volArc, *call;
   // терминал / лампы
-  lv_obj_t *term[8], *cursor;
+  lv_obj_t *term[9], *cursor;
   lv_obj_t *nixClk[4], *nixVal[3][2];
   // заставка
   lv_obj_t *wTemp, *wDesc, *wSub;
+  lv_obj_t* vfdLbl[3];
+  // погода в скине: значок, температура, описание и до 4 ячеек прогноза
+  struct WxPal { uint32_t sun, cloud, drop, bg; };
+  struct WxView {
+    lv_obj_t *icon = nullptr, *temp = nullptr, *desc = nullptr, *time = nullptr;
+    int s = 0, code = -100;
+    bool night = false;
+  };
+  WxPal wxPal = {0xFFC83D, 0xD5DCE6, 0x4CC9F0, 0x000000};
+  WxView wx;
+  WxView fc[4];
+  int fcN = 0, fcStep = 3;
+  bool wxLong = false;   // описание с «ощущается»
 };
 
 static State S;
@@ -278,10 +291,200 @@ static lv_obj_t* needleLine(lv_obj_t* sc, uint32_t col, int w) {
   return n;
 }
 
+
+// ------------------------------------------------------------------ погода
+static const char* weatherText(int c) {
+  if (c == 0) return "Ясно";
+  if (c == 1) return "Малооблачно";
+  if (c == 2) return "Облачно";
+  if (c == 3) return "Пасмурно";
+  if (c == 45 || c == 48) return "Туман";
+  if (c >= 51 && c <= 57) return "Морось";
+  if (c >= 61 && c <= 67) return "Дождь";
+  if (c >= 71 && c <= 77) return "Снег";
+  if (c >= 80 && c <= 82) return "Ливень";
+  if (c == 85 || c == 86) return "Снегопад";
+  if (c >= 95) return "Гроза";
+  return "Погода";
+}
+
+static int clampi(float v) { return (int)lroundf(v); }
+
+static lv_obj_t* disc(lv_obj_t* p, float x, float y, float d, uint32_t c) {
+  return box(p, clampi(x), clampi(y), max(2, clampi(d)), max(2, clampi(d)), c, LV_RADIUS_CIRCLE);
+}
+
+static void drawCloud(lv_obj_t* p, float ox, float oy, float k, uint32_t c) {
+  box(p, clampi(ox + k * 0.04f), clampi(oy + k * 0.42f), clampi(k * 0.92f), max(3, clampi(k * 0.36f)), c, LV_RADIUS_CIRCLE);
+  disc(p, ox + k * 0.12f, oy + k * 0.24f, k * 0.42f, c);
+  disc(p, ox + k * 0.36f, oy + k * 0.06f, k * 0.54f, c);
+}
+
+static void drawSun(lv_obj_t* p, float cx, float cy, float d, uint32_t c, bool rays) {
+  lv_obj_t* o = disc(p, cx - d / 2, cy - d / 2, d, c);
+  lv_obj_set_style_shadow_width(o, max(4, clampi(d * 0.6f)), 0);
+  lv_obj_set_style_shadow_color(o, C(c), 0);
+  lv_obj_set_style_shadow_opa(o, LV_OPA_50, 0);
+  if (!rays) return;
+  float L = d * 0.30f, t = max(2.0f, d * 0.13f), R = d * 0.62f;
+  box(p, clampi(cx - t / 2), clampi(cy - R - L), clampi(t), clampi(L), c, LV_RADIUS_CIRCLE);
+  box(p, clampi(cx - t / 2), clampi(cy + R), clampi(t), clampi(L), c, LV_RADIUS_CIRCLE);
+  box(p, clampi(cx - R - L), clampi(cy - t / 2), clampi(L), clampi(t), c, LV_RADIUS_CIRCLE);
+  box(p, clampi(cx + R), clampi(cy - t / 2), clampi(L), clampi(t), c, LV_RADIUS_CIRCLE);
+  float q = (R + L * 0.4f) * 0.7071f, dd = t * 1.15f;
+  disc(p, cx - q - dd / 2, cy - q - dd / 2, dd, c);
+  disc(p, cx + q - dd / 2, cy - q - dd / 2, dd, c);
+  disc(p, cx - q - dd / 2, cy + q - dd / 2, dd, c);
+  disc(p, cx + q - dd / 2, cy + q - dd / 2, dd, c);
+}
+
+static void drawMoon(lv_obj_t* p, float cx, float cy, float d, uint32_t c, uint32_t bg) {
+  lv_obj_t* o = disc(p, cx - d / 2, cy - d / 2, d, c);
+  lv_obj_set_style_shadow_width(o, max(3, clampi(d * 0.4f)), 0);
+  lv_obj_set_style_shadow_color(o, C(c), 0);
+  lv_obj_set_style_shadow_opa(o, LV_OPA_30, 0);
+  disc(p, cx - d / 2 + d * 0.34f, cy - d / 2 - d * 0.16f, d * 0.86f, bg);
+}
+
+static lv_point_precise_t boltPts[12][4];
+static int boltN = 0;
+
+static void drawIcon(lv_obj_t* cont, int s, int code, bool night, const State::WxPal& p) {
+  lv_obj_clean(cont);
+  if (code < 0) return;
+  float k = (float)s;
+  bool clear = code == 0, partly = code == 1 || code == 2;
+  if (clear) {
+    if (night) drawMoon(cont, k * 0.5f, k * 0.5f, k * 0.58f, p.sun, p.bg);
+    else drawSun(cont, k * 0.5f, k * 0.5f, k * 0.42f, p.sun, true);
+    return;
+  }
+  if (partly) {
+    if (night) drawMoon(cont, k * 0.66f, k * 0.30f, k * 0.44f, p.sun, p.bg);
+    else drawSun(cont, k * 0.64f, k * 0.32f, k * 0.34f, p.sun, code == 1);
+    drawCloud(cont, 0, k * 0.26f, k * 0.80f, p.cloud);
+    return;
+  }
+  bool fog = code == 45 || code == 48;
+  bool precip = !fog && code >= 51;
+  drawCloud(cont, k * 0.02f, precip || fog ? -k * 0.06f : k * 0.08f, k * 0.96f, p.cloud);
+  if (fog) {
+    box(cont, clampi(k * 0.08f), clampi(k * 0.70f), clampi(k * 0.84f), max(2, clampi(k * 0.08f)), p.cloud, LV_RADIUS_CIRCLE);
+    box(cont, clampi(k * 0.20f), clampi(k * 0.84f), clampi(k * 0.66f), max(2, clampi(k * 0.08f)), p.cloud, LV_RADIUS_CIRCLE);
+    return;
+  }
+  if (!precip) return;
+  bool snow = (code >= 71 && code <= 77) || code == 85 || code == 86;
+  bool storm = code >= 95;
+  if (snow) {
+    float d = max(3.0f, k * 0.13f);
+    disc(cont, k * 0.22f, k * 0.70f, d, p.drop);
+    disc(cont, k * 0.46f, k * 0.78f, d, p.drop);
+    disc(cont, k * 0.70f, k * 0.70f, d, p.drop);
+    disc(cont, k * 0.34f, k * 0.88f, d * 0.8f, p.drop);
+    disc(cont, k * 0.58f, k * 0.90f, d * 0.8f, p.drop);
+    return;
+  }
+  float w = max(2.0f, k * 0.09f), h = k * 0.20f;
+  int n = (code >= 51 && code <= 57) ? 2 : (code >= 80 && code <= 82) ? 4 : 3;
+  if (storm) n = 2;
+  for (int i = 0; i < n; i++) {
+    float x = n == 4 ? k * (0.16f + i * 0.20f) : n == 2 ? k * (0.28f + i * 0.40f) : k * (0.22f + i * 0.26f);
+    float y = k * (0.68f + ((i & 1) ? 0.10f : 0.0f));
+    box(cont, clampi(x), clampi(y), clampi(w), clampi(n == 2 && !storm ? h * 0.6f : h), p.drop, LV_RADIUS_CIRCLE);
+  }
+  if (storm) {
+    lv_point_precise_t* b = boltPts[boltN++ % 12];
+    b[0] = {(lv_value_precise_t)(k * 0.58f), (lv_value_precise_t)(k * 0.56f)};
+    b[1] = {(lv_value_precise_t)(k * 0.42f), (lv_value_precise_t)(k * 0.78f)};
+    b[2] = {(lv_value_precise_t)(k * 0.58f), (lv_value_precise_t)(k * 0.78f)};
+    b[3] = {(lv_value_precise_t)(k * 0.44f), (lv_value_precise_t)(k * 0.98f)};
+    lv_obj_t* l = lv_line_create(cont);
+    lv_line_set_points(l, b, 4);
+    lv_obj_set_style_line_width(l, max(2, clampi(k * 0.09f)), 0);
+    lv_obj_set_style_line_color(l, C(p.sun), 0);
+    lv_obj_set_style_line_rounded(l, true, 0);
+  }
+}
+
+// Контейнер значка погоды размером s×s.
+static lv_obj_t* wxIconBox(lv_obj_t* p, int x, int y, int s) {
+  lv_obj_t* o = lv_obj_create(p);
+  lv_obj_remove_style_all(o);
+  lv_obj_set_pos(o, x, y);
+  lv_obj_set_size(o, s, s);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_clip_corner(o, false, 0);
+  return o;
+}
+
+static void wxPal(uint32_t sun, uint32_t cloud, uint32_t drop, uint32_t bg) { S.wxPal = {sun, cloud, drop, bg}; }
+
+// Текущая погода: значок, температура (и описание, если есть место).
+static void wxNow(lv_obj_t* p, int x, int y, int s, lv_obj_t* temp, lv_obj_t* desc = nullptr) {
+  S.wx.icon = s > 0 ? wxIconBox(p, x, y, s) : nullptr;
+  S.wx.s = s;
+  S.wx.temp = temp;
+  S.wx.desc = desc;
+}
+
+// Ячейка прогноза: время сверху, значок, температура снизу.
+static void wxSlot(lv_obj_t* p, int x, int y, int w, int s, const lv_font_t* ft, const lv_font_t* fv, uint32_t tc,
+                   uint32_t vc) {
+  if (S.fcN >= 4) return;
+  State::WxView& v = S.fc[S.fcN++];
+  v.time = lab(p, x, y, w, "", ft, tc, LV_TEXT_ALIGN_CENTER);
+  int th = lv_font_get_line_height(ft);
+  v.icon = wxIconBox(p, x + (w - s) / 2, y + th + 1, s);
+  v.s = s;
+  v.temp = lab(p, x, y + th + s + 2, w, "", fv, vc, LV_TEXT_ALIGN_CENTER);
+}
+
+static bool isNight(int hour) { return hour >= 19 || hour < 7; }
+
+static void wxShow(State::WxView& v, const Weather& w, bool night) {
+  int code = w.ok ? w.code : -1;
+  if (v.icon && (code != v.code || night != v.night)) drawIcon(v.icon, v.s, code, night, S.wxPal);
+  v.code = code;
+  v.night = night;
+  if (v.temp) {
+    if (w.ok) setFmt(v.temp, "%+.0f°", w.temp);
+    else setText(v.temp, "");
+  }
+}
+
+static void updWeather() {
+  if (!S.wx.icon && !S.wx.temp && !S.fcN) return;
+  time_t t = time(nullptr);
+  struct tm tm = {};
+  if (t > 1700000000) localtime_r(&t, &tm);
+  Weather w = monitorWeather();
+  wxShow(S.wx, w, isNight(tm.tm_hour));
+  if (S.wx.desc) {
+    if (!w.ok) setText(S.wx.desc, "");
+    else if (S.wxLong) setFmt(S.wx.desc, "%s · ощущ. %+.0f°", weatherText(w.code), w.feels);
+    else setText(S.wx.desc, weatherText(w.code));
+  }
+  for (int i = 0; i < S.fcN; i++) {
+    int ahead = (i + 1) * S.fcStep;
+    Weather f;
+    bool ok = monitorForecast(ahead, f);
+    int hh = (tm.tm_hour + ahead) % 24;
+    if (ok) setFmt(S.fc[i].time, "%02d:00", hh);
+    else {
+      setText(S.fc[i].time, "");
+      f.ok = false;
+    }
+    wxShow(S.fc[i], f, isNight(hh));
+  }
+}
+
 // ------------------------------------------------------------------ 0. Приборы
 static void buildAnalog(lv_obj_t* scr) {
   lv_obj_set_style_bg_color(scr, C(0x0C0E11), 0);
-  S.host = lab(scr, 8, 6, 92, "", f9b, 0xAAB1BC);
+  wxPal(0xFFB547, 0xC9CED6, 0x4CC9F0, 0x0C0E11);
+  wxNow(scr, 8, 2, 22, lab(scr, 34, 5, 56, "", f14b, 0xFFFFFF));
   S.clock = lab(scr, 120, 5, 80, "--:--", f14b, 0xFFFFFF, LV_TEXT_ALIGN_CENTER);
   S.net = lab(scr, 186, 6, 128, "", f9b, 0xFFFFFF, LV_TEXT_ALIGN_RIGHT);
 
@@ -297,9 +500,9 @@ static void buildAnalog(lv_obj_t* scr) {
     lv_scale_set_line_needle_value(S.sc[i], S.needle[i], 50, 0);
     lv_obj_t* hub = box(face, 0, 0, 14, 14, 0x23272D, LV_RADIUS_CIRCLE, 0x4A505A, 2);
     lv_obj_center(hub);
-    lab(scr, cx - 20, cy - 28, 40, names[i], f9b, 0xAAB1BC, LV_TEXT_ALIGN_CENTER);
-    S.val[i] = lab(scr, cx - 34, cy + 24, 68, "—", f20b, 0xFFFFFF, LV_TEXT_ALIGN_CENTER);
-    S.sub[i] = lab(scr, cx - 36, cy + 48, 72, "", f8, 0xAAB1BC, LV_TEXT_ALIGN_CENTER);
+    lab(scr, cx - 20, cy + 11, 40, names[i], f9b, 0xFF9F1C, LV_TEXT_ALIGN_CENTER);
+    S.val[i] = lab(scr, cx - 40, cy + 24, 80, "—", f24, 0xFFFFFF, LV_TEXT_ALIGN_CENTER);
+    S.sub[i] = lab(scr, cx - 44, cy + 50, 88, "", f8, 0xAAB1BC, LV_TEXT_ALIGN_CENTER);
   }
 
   static const char* cells[3] = {"ТЕМП. CPU", "ТЕМП. GPU", "ОЗУ, ГБ"};
@@ -332,7 +535,7 @@ static void updAnalog(const PcStats& pc) {
   else setText(S.val[0], "—");
   if (on && pc.hasGpu) setFmt(S.val[1], "%.0f%%", pc.gpuPct);
   else setText(S.val[1], "—");
-  if (pc.cpuFreqGHz > 0.1f) setFmt(S.sub[0], "%.1f ГГц", pc.cpuFreqGHz);
+  if (on && pc.cpuFreqGHz > 0.1f) setFmt(S.sub[0], "%.1f ГГц", pc.cpuFreqGHz);
   else setText(S.sub[0], "");
   char g[24];
   gpuShort(pc, g, sizeof(g));
@@ -366,7 +569,8 @@ static void buildNeon(lv_obj_t* scr) {
   S.big = lab(scr, cx - 36, cy - 22, 72, "—", f30b, NEON[0], LV_TEXT_ALIGN_CENTER);
   S.bigSub = lab(scr, cx - 38, cy + 13, 76, "CPU", f8, 0xB9B3E0, LV_TEXT_ALIGN_CENTER);
 
-  S.host = lab(scr, 10, 6, 120, "", f9b, 0xB9B3E0);
+  wxPal(0xFFE14D, 0x22E3FF, 0xFF4DF5, 0x07060D);
+  wxNow(scr, 10, 4, 24, lab(scr, 40, 7, 60, "", f16b, 0xFFFFFF), lab(scr, 100, 9, 96, "", f9, 0xB9B3E0));
   S.clock = lab(scr, 200, 6, 110, "--:--", f20b, 0xFFFFFF, LV_TEXT_ALIGN_RIGHT);
 
   static const char* rows[3] = {"GPU", "RAM", "NET"};
@@ -447,7 +651,9 @@ static void buildMinimal(lv_obj_t* scr) {
   box(scr, 20, 204, 280, 1, LINE);
   S.clock = lab(scr, 20, 213, 0, "--:--", f14b, INK);
   S.date = lab(scr, 68, 215, 110, "", f9, MUT);
-  S.host = lab(scr, 190, 215, 110, "", f9, MUT, LV_TEXT_ALIGN_RIGHT);
+  wxPal(0xE8890C, 0x8C8C96, 0x2F6FD6, 0xF4F2EE);
+  wxNow(scr, 236, 208, 24, lab(scr, 260, 211, 40, "", f14b, INK, LV_TEXT_ALIGN_RIGHT),
+        lab(scr, 150, 215, 82, "", f9, MUT, LV_TEXT_ALIGN_RIGHT));
 }
 
 static void updMinimal(const PcStats& pc) {
@@ -508,10 +714,10 @@ static void buildRetro(lv_obj_t* scr) {
 
   // люминесцентное табло
   lv_obj_t* vp = box(scr, 208, 10, 102, 120, PANEL, 6, EDGE, 2);
-  static const char* rows[3] = {"GPU", "TEMP", "RAM"};
+  static const char* rows[3] = {"GPU", "t° CPU", "ПОГОДА"};
   for (int i = 0; i < 3; i++) {
     int y = 6 + i * 37;
-    lab(vp, 8, y - 2, 40, rows[i], f8, DIM);
+    S.vfdLbl[i] = lab(vp, 8, y - 2, 84, rows[i], f8, DIM);
     S.vfd[i] = lab(vp, 8, y + 10, 82, "—", f20b, VFD, LV_TEXT_ALIGN_RIGHT);
     if (i < 2) box(vp, 8, y + 34, 82, 1, 0x12302B);
   }
@@ -566,10 +772,24 @@ static void updRetro(const PcStats& pc) {
 
   if (on && pc.hasGpu) setFmt(S.vfd[0], "%.0f%%", pc.gpuPct);
   else setText(S.vfd[0], "—");
-  if (on && pc.gpuTemp > 0) setFmt(S.vfd[1], "%.0f°", pc.gpuTemp);
-  else setText(S.vfd[1], "—");
-  if (on) setFmt(S.vfd[2], "%.0f%%", pc.ramPct);
-  else setText(S.vfd[2], "—");
+  if (on && pc.cpuTemp > 0) {
+    setText(S.vfdLbl[1], "t° CPU");
+    setFmt(S.vfd[1], "%.0f°", pc.cpuTemp);
+  } else if (on && pc.gpuTemp > 0) {
+    setText(S.vfdLbl[1], "t° GPU");
+    setFmt(S.vfd[1], "%.0f°", pc.gpuTemp);
+  } else {
+    setText(S.vfdLbl[1], "t° CPU");
+    setText(S.vfd[1], "—");
+  }
+  Weather w = monitorWeather();
+  if (w.ok) {
+    setFmt(S.vfd[2], "%+.0f°", w.temp);
+    setFmt(S.vfdLbl[2], "%s", weatherText(w.code));
+  } else {
+    setText(S.vfd[2], "—");
+    setText(S.vfdLbl[2], "ПОГОДА");
+  }
 
   if (on) {
     setFmt(S.ledLbl[0], "ОЗУ %.0f%%", pc.ramPct);
@@ -600,7 +820,9 @@ static lv_obj_t* fullRing(lv_obj_t* p, int cx, int cy, int r, int w, uint32_t tr
 static void buildClockRings(lv_obj_t* scr) {
   lv_obj_set_style_bg_color(scr, C(0x000000), 0);
   S.clock = lab(scr, 0, 12, 320, "--:--", f84b, 0xFFFFFF, LV_TEXT_ALIGN_CENTER);
-  S.net = lab(scr, 0, 102, 320, "нет связи с ПК", f9, 0xCED4DA, LV_TEXT_ALIGN_CENTER);
+  S.net = lab(scr, 0, 104, 160, "", f14b, 0xCED4DA, LV_TEXT_ALIGN_RIGHT);
+  wxPal(0xFFA51E, 0xDDE3EA, 0x45C5FF, 0x000000);
+  wxNow(scr, 172, 98, 26, lab(scr, 202, 104, 50, "", f14b, 0xFFFFFF), lab(scr, 240, 106, 80, "", f9, 0x8E959E));
 
   static const int cxs[4] = {52, 124, 196, 268};
   static const char* names[4] = {"CPU", "GPU", "ОЗУ", "ТЕМП"};
@@ -646,10 +868,7 @@ static void updClockRings(const PcStats& pc) {
                                  "июля", "августа", "сентября", "октября", "ноября", "декабря"};
     snprintf(d, sizeof(d), "%s, %d %s", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon]);
   }
-  if (on && d[0]) setFmt(S.net, "%s · ↓ %.1f ↑ %.1f Мбит/с", d, pc.netDownMbps, pc.netUpMbps);
-  else if (on) setFmt(S.net, "↓ %.1f ↑ %.1f Мбит/с", pc.netDownMbps, pc.netUpMbps);
-  else if (d[0]) setFmt(S.net, "%s · нет связи с ПК", d);
-  else setText(S.net, "нет связи с ПК");
+  setText(S.net, d);
 }
 
 // ------------------------------------------------------------------ 5. Терминал
@@ -662,12 +881,25 @@ static void asciiBar(char* out, float pct) {
 static void buildTerminal(lv_obj_t* scr) {
   const uint32_t FG = 0x35E85A, DIM = 0x28C048;
   lv_obj_set_style_bg_color(scr, C(0x020A04), 0);
-  static const int ys[8] = {10, 38, 66, 94, 122, 150, 178, 206};
-  for (int i = 0; i < 8; i++) {
-    uint32_t col = (i == 0 || i == 7) ? DIM : FG;
-    S.term[i] = lab(scr, 8, ys[i], 308, "", fMono, col);
+  for (int i = 0; i < 9; i++) {
+    uint32_t col = (i == 0 || i == 8) ? DIM : FG;
+    S.term[i] = lab(scr, 8, 6 + i * 25, 308, "", fMono, col);
   }
   S.cursor = box(scr, 188, 206, 10, 18, FG);
+}
+
+static const char* wxWord(int c) {
+  if (c == 0) return "clear";
+  if (c <= 2) return "partly";
+  if (c == 3) return "overcast";
+  if (c == 45 || c == 48) return "fog";
+  if (c >= 51 && c <= 57) return "drizzle";
+  if (c >= 61 && c <= 67) return "rain";
+  if (c >= 71 && c <= 77) return "snow";
+  if (c >= 80 && c <= 82) return "shower";
+  if (c == 85 || c == 86) return "snow";
+  if (c >= 95) return "storm";
+  return "--";
 }
 
 static void updTerminal(const PcStats& pc) {
@@ -710,6 +942,9 @@ static void updTerminal(const PcStats& pc) {
     setText(S.term[5], "NET offline");
     setText(S.term[6], "VOL --");
   }
+  Weather w = monitorWeather();
+  if (w.ok) setFmt(S.term[7], "WTR %+.0fC %s wind %.0fm/s", w.temp, wxWord(w.code), w.wind);
+  else setText(S.term[7], "WTR n/a");
 
   time_t t = time(nullptr);
   char tb[32];
@@ -724,10 +959,10 @@ static void updTerminal(const PcStats& pc) {
   } else {
     strcpy(tb, "--:--:--");
   }
-  setText(S.term[7], tb);
+  setText(S.term[8], tb);
   if (S.cursor) {
     int cx = 8 + (int)strlen(tb) * 9 + 4;
-    lv_obj_set_pos(S.cursor, min(cx, 304), 206);
+    lv_obj_set_pos(S.cursor, min(cx, 304), 6 + 8 * 25);
     if ((millis() / 500) & 1) lv_obj_add_flag(S.cursor, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(S.cursor, LV_OBJ_FLAG_HIDDEN);
   }
@@ -750,8 +985,11 @@ static void buildTiles(lv_obj_t* scr) {
   }
   S.clock = lab(scr, 10, 194, 92, "--:--", f30b, 0xFFFFFF);
   S.date = lab(scr, 104, 198, 128, "", f9, 0xD0D5DD);
-  S.host = lab(scr, 104, 214, 128, "", f9, 0x7A828E);
-  S.vol = lab(scr, 232, 206, 80, "громк. —", f9, 0xBDC4CE, LV_TEXT_ALIGN_RIGHT);
+  S.host = lab(scr, 104, 214, 96, "", f9, 0x7A828E);
+  lv_obj_t* wt = box(scr, 196, 190, 116, 44, 0x161A22, 12);
+  wxPal(0xFFC83D, 0xE6ECFF, 0x5A8DF7, 0x161A22);
+  wxNow(wt, 8, 5, 34, lab(wt, 46, 2, 62, "", f20b, 0xFFFFFF, LV_TEXT_ALIGN_RIGHT),
+        lab(wt, 40, 26, 68, "", f8, 0xBDC4CE, LV_TEXT_ALIGN_RIGHT));
 }
 
 static void updTiles(const PcStats& pc) {
@@ -781,13 +1019,11 @@ static void updTiles(const PcStats& pc) {
     setFmt(S.rowSub[2], "из %.0f ГБ", pc.ramTotalGB);
     setFmt(S.cellVal[3], "%.1f", pc.netDownMbps);
     setFmt(S.rowSub[3], "↓ Мбит/с · ↑ %.1f", pc.netUpMbps);
-    setFmt(S.vol, pc.muted ? "звук выкл" : "громк. %d", pc.volume);
   } else {
     setText(S.cellVal[2], "—");
     setText(S.rowSub[2], "");
     setText(S.cellVal[3], "—");
     setText(S.rowSub[3], "");
-    setText(S.vol, "громк. —");
   }
   setBar(S.cellBar[2], on ? pc.ramPct : 0);
   setBar(S.cellBar[3], on ? min(100.0f, pc.netDownMbps) : 0);
@@ -819,9 +1055,10 @@ static void buildNixie(lv_obj_t* scr) {
   lv_obj_t* bot = box(scr, 8, 190, 304, 42, 0x150E08, 8, 0x6E5233, 1);
   S.sub[0] = lab(bot, 10, 5, 86, "CPU —", f14b, 0xE6D7C3);
   S.sub[1] = lab(bot, 10, 21, 86, "GPU —", f14b, 0xE6D7C3);
-  S.rx = lab(bot, 96, 5, 114, "↓ — Мбит/с", f14b, 0xE6D7C3, LV_TEXT_ALIGN_CENTER);
-  S.tx = lab(bot, 96, 21, 114, "↑ — Мбит/с", f14b, 0xE6D7C3, LV_TEXT_ALIGN_CENTER);
-  S.host = lab(bot, 208, 13, 86, "", f14b, 0xE6D7C3, LV_TEXT_ALIGN_RIGHT);
+  S.rx = lab(bot, 98, 5, 114, "↓ — Мбит/с", f14b, 0xE6D7C3, LV_TEXT_ALIGN_LEFT);
+  S.tx = lab(bot, 98, 21, 114, "↑ — Мбит/с", f14b, 0xE6D7C3, LV_TEXT_ALIGN_LEFT);
+  wxPal(0xFF8A2B, 0xC9B49A, 0xFFB46B, 0x150E08);
+  wxNow(bot, 222, 4, 30, lab(bot, 252, 11, 44, "", f16b, 0xFF8A2B, LV_TEXT_ALIGN_RIGHT));
 }
 
 static void setNixPair(lv_obj_t* a, lv_obj_t* b, float v, bool ok) {
@@ -870,7 +1107,8 @@ static void updNixie(const PcStats& pc) {
 static void buildImpulse(lv_obj_t* scr) {
   const uint32_t CYAN = 0x24D8FF, MUT = 0x8AA2B8;
   lv_obj_set_style_bg_color(scr, C(0x07111D), 0);
-  S.host = lab(scr, 12, 7, 150, "", f9b, MUT);
+  wxPal(0xFFC83D, 0xCFE6F5, 0x24D8FF, 0x07111D);
+  wxNow(scr, 12, 3, 22, lab(scr, 38, 6, 50, "", f14b, 0xEAF7FF), lab(scr, 82, 8, 110, "", f9, MUT));
   S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xEAF7FF, LV_TEXT_ALIGN_RIGHT);
   box(scr, 12, 28, 296, 1, 0x153047);
   S.ring[0] = arcRing(scr, 83, 116, 59, 8, 0x153047, CYAN, LV_OPA_COVER, LV_OPA_COVER);
@@ -920,7 +1158,8 @@ static void updImpulse(const PcStats& pc) {
 static void buildOrbit(lv_obj_t* scr) {
   const uint32_t MUT = 0x8295A8, TRACE = 0x24465B;
   lv_obj_set_style_bg_color(scr, C(0x081018), 0);
-  S.host = lab(scr, 12, 7, 150, "", f9b, MUT);
+  wxPal(0xFFC83D, 0xCFE0EE, 0x34D5FF, 0x081018);
+  wxNow(scr, 12, 3, 22, lab(scr, 38, 6, 50, "", f14b, 0xEAF5FF), lab(scr, 82, 8, 110, "", f9, MUT));
   S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xEAF5FF, LV_TEXT_ALIGN_RIGHT);
   box(scr, 12, 28, 296, 1, 0x1C3344);
 
@@ -985,26 +1224,39 @@ static void updOrbit(const PcStats& pc) {
 }
 
 // ------------------------------------------------------------------ 10. HUD
+static void hudCorner(lv_obj_t* scr, int x, int y, int dx, int dy, uint32_t c) {
+  box(scr, dx > 0 ? x : x - 9, y, 10, 2, c);
+  box(scr, x, dy > 0 ? y : y - 9, 2, 10, c);
+}
+
 static void buildHud(lv_obj_t* scr) {
-  const uint32_t MUT = 0x8995A7;
+  const uint32_t MUT = 0x8995A7, EDGE = 0x3B4654;
   lv_obj_set_style_bg_color(scr, C(0x0B0D12), 0);
-  S.host = lab(scr, 12, 7, 150, "", f9b, MUT);
+  S.host = lab(scr, 12, 7, 100, "", f9b, MUT);
+  S.net = lab(scr, 100, 7, 120, "", f9b, 0x42E6B5, LV_TEXT_ALIGN_CENTER);
   S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xF4F7FC, LV_TEXT_ALIGN_RIGHT);
   box(scr, 12, 28, 296, 1, 0x27303D);
-  static const char* names[4] = {"01 / CPU", "02 / GPU", "03 / RAM", "04 / SSD"};
+  static const char* names[4] = {"01 CPU", "02 GPU", "03 RAM", "04 SSD"};
   static const uint32_t colors[4] = {0xFF4E9B, 0x27D9F2, 0xB18CFF, 0xFFB454};
   for (int i = 0; i < 4; ++i) {
-    int y = 42 + i * 37;
-    lab(scr, 14, y, 66, names[i], f8, MUT);
-    S.cellVal[i] = lab(scr, 267, y - 3, 39, "—", f14b, colors[i], LV_TEXT_ALIGN_RIGHT);
-    S.cellBar[i] = bar(scr, 82, y + 14, 174, 5, 0x222A35, colors[i]);
-    // Tick marks split each meter into calibrated intervals.
-    for (int k = 1; k < 10; ++k) box(scr, 82 + k * 17, y + 11, 1, 11, 0x3B4654);
+    int y = 36 + i * 32;
+    lab(scr, 14, y + 1, 66, names[i], f9b, 0xC9D1DC);
+    S.cellBar[i] = bar(scr, 84, y + 5, 160, 6, 0x222A35, colors[i]);
+    for (int k = 1; k < 10; ++k) box(scr, 84 + k * 16, y + 2, 1, 12, EDGE);
+    S.cellVal[i] = lab(scr, 246, y - 2, 62, "—", f16b, colors[i], LV_TEXT_ALIGN_RIGHT);
+    S.rowSub[i] = lab(scr, 84, y + 15, 224, "", f8, MUT);
   }
-  box(scr, 12, 198, 296, 1, 0x27303D);
-  lab(scr, 15, 212, 44, "IN ↓", f8, MUT);
-  lab(scr, 268, 212, 38, "OUT ↑", f8, MUT, LV_TEXT_ALIGN_RIGHT);
-  S.net = lab(scr, 58, 208, 204, "— / — Мбит/с", f14b, 0x42E6B5, LV_TEXT_ALIGN_CENTER);
+  // нижняя панель: погода и прогноз в «прицельных» уголках
+  hudCorner(scr, 8, 168, 1, 1, EDGE);
+  hudCorner(scr, 310, 168, -1, 1, EDGE);
+  hudCorner(scr, 8, 234, 1, -1, EDGE);
+  hudCorner(scr, 310, 234, -1, -1, EDGE);
+  wxPal(0xFFB454, 0xC9D1DC, 0x27D9F2, 0x0B0D12);
+  wxNow(scr, 16, 178, 38, lab(scr, 58, 174, 92, "", f24, 0xF4F7FC),
+        lab(scr, 58, 204, 96, "", f8, MUT));
+  box(scr, 156, 176, 1, 50, 0x27303D);
+  S.fcStep = 3;
+  for (int i = 0; i < 3; i++) wxSlot(scr, 162 + i * 49, 174, 48, 22, f8, f9b, MUT, 0xF4F7FC);
 }
 
 static void updHud(const PcStats& pc) {
@@ -1015,33 +1267,52 @@ static void updHud(const PcStats& pc) {
     if (valid[i]) setFmt(S.cellVal[i], "%.0f%%", v[i]); else setText(S.cellVal[i], "—");
     setBar(S.cellBar[i], valid[i] ? v[i] : 0);
   }
-  if (on) setFmt(S.net, "%.1f / %.1f Мбит/с", pc.netDownMbps, pc.netUpMbps);
-  else setText(S.net, "ПК не подключён");
+  if (on) {
+    if (pc.cpuTemp > 0) setFmt(S.rowSub[0], "%.0f°C · %.1f ГГц", pc.cpuTemp, pc.cpuFreqGHz);
+    else setFmt(S.rowSub[0], "%.1f ГГц", pc.cpuFreqGHz);
+    if (pc.hasGpu && pc.gpuTemp > 0) setFmt(S.rowSub[1], "%.0f°C · VRAM %.1f / %.0f ГБ", pc.gpuTemp, pc.vramUsedGB, pc.vramTotalGB);
+    else setText(S.rowSub[1], pc.hasGpu ? "" : "нет видеокарты");
+    setFmt(S.rowSub[2], "%.1f / %.0f ГБ", pc.ramUsedGB, pc.ramTotalGB);
+    setFmt(S.rowSub[3], "%.0f / %.0f ГБ", pc.diskUsedGB, pc.diskTotalGB);
+    setFmt(S.net, "↓ %.1f  ↑ %.1f", pc.netDownMbps, pc.netUpMbps);
+  } else {
+    for (int i = 0; i < 4; i++) setText(S.rowSub[i], "");
+    setText(S.net, "");
+  }
 }
 
 // ------------------------------------------------------------------ 11. Сканлайн
 static void buildScanline(lv_obj_t* scr) {
-  const uint32_t MUT = 0x8297A5, CYAN = 0x42D8FF;
+  const uint32_t MUT = 0x8297A5, CYAN = 0x42D8FF, LINE = 0x1D3440;
   lv_obj_set_style_bg_color(scr, C(0x080D12), 0);
-  S.host = lab(scr, 12, 7, 150, "", f9b, MUT);
+  S.host = lab(scr, 12, 7, 100, "", f9b, MUT);
+  S.net = lab(scr, 100, 7, 120, "", f9b, CYAN, LV_TEXT_ALIGN_CENTER);
   S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xE9F6FF, LV_TEXT_ALIGN_RIGHT);
-  box(scr, 12, 28, 296, 1, 0x1D3440);
-  lab(scr, 14, 38, 174, "ГРАФИК CPU · 48 С", f8, MUT);
-  S.chart = sparkline(scr, 12, 54, 178, 102, CYAN, &S.ser);
-  box(scr, 199, 38, 1, 118, 0x1D3440);
-  lab(scr, 210, 43, 94, "GPU", f8, MUT);
-  S.rowVal[0] = lab(scr, 210, 57, 94, "—", f20b, CYAN);
-  S.rowSub[0] = lab(scr, 210, 82, 94, "", f8, MUT);
-  box(scr, 210, 103, 94, 1, 0x1D3440);
-  lab(scr, 210, 111, 94, "ОЗУ", f8, MUT);
-  S.rowVal[1] = lab(scr, 210, 126, 94, "—", f16b, 0x42E6B5);
-  S.rowSub[1] = lab(scr, 210, 146, 94, "", f8, MUT);
-  box(scr, 12, 168, 296, 1, 0x1D3440);
-  lab(scr, 14, 179, 48, "ДИСК", f8, MUT);
-  S.rowVal[2] = lab(scr, 60, 174, 56, "—", f14b, 0xFFB454);
-  lab(scr, 133, 179, 42, "CPU", f8, MUT);
-  S.rowVal[3] = lab(scr, 169, 174, 48, "—", f14b, 0xFF4E9B);
-  S.net = lab(scr, 14, 207, 292, "↓ —   ↑ — Мбит/с", f9b, CYAN, LV_TEXT_ALIGN_CENTER);
+  box(scr, 12, 28, 296, 1, LINE);
+  lab(scr, 14, 38, 100, "CPU · 48 С", f9b, MUT);
+  S.rowVal[3] = lab(scr, 110, 33, 80, "—", f16b, 0xFF4E9B, LV_TEXT_ALIGN_RIGHT);
+  lv_obj_t* frame = box(scr, 12, 56, 180, 96, 0x0B141B, 6, LINE, 1);
+  S.chart = sparkline(frame, 2, 4, 176, 88, CYAN, &S.ser);
+  lv_chart_set_div_line_count(S.chart, 4, 0);
+  lv_obj_set_style_line_color(S.chart, C(0x16303C), LV_PART_MAIN);
+  lv_obj_set_style_line_width(S.chart, 1, LV_PART_MAIN);
+  lv_obj_set_style_line_dash_width(S.chart, 2, LV_PART_MAIN);
+  lv_obj_set_style_line_dash_gap(S.chart, 3, LV_PART_MAIN);
+  box(scr, 201, 38, 1, 114, LINE);
+  lab(scr, 210, 38, 94, "GPU", f9b, MUT);
+  S.rowVal[0] = lab(scr, 210, 52, 94, "—", f20b, CYAN);
+  S.rowSub[0] = lab(scr, 210, 77, 98, "", f8, MUT);
+  box(scr, 210, 96, 94, 1, LINE);
+  lab(scr, 210, 102, 94, "ОЗУ", f9b, MUT);
+  S.rowVal[1] = lab(scr, 210, 116, 94, "—", f20b, 0x42E6B5);
+  S.rowSub[1] = lab(scr, 210, 141, 98, "", f8, MUT);
+  box(scr, 12, 162, 296, 1, LINE);
+  wxPal(0xFFC83D, 0xCFE6F5, CYAN, 0x080D12);
+  S.wxLong = true;
+  wxNow(scr, 12, 172, 42, lab(scr, 60, 168, 90, "", f30b, 0xE9F6FF),
+        lab(scr, 60, 206, 110, "", f8, MUT));
+  S.fcStep = 3;
+  for (int i = 0; i < 3; i++) wxSlot(scr, 172 + i * 46, 168, 46, 24, f8, f9b, MUT, 0xE9F6FF);
 }
 
 static void updScanline(const PcStats& pc) {
@@ -1054,13 +1325,13 @@ static void updScanline(const PcStats& pc) {
   if (on) {
     setFmt(S.rowVal[1], "%.0f%%", pc.ramPct);
     setFmt(S.rowSub[1], "%.1f / %.0f ГБ", pc.ramUsedGB, pc.ramTotalGB);
-    setFmt(S.rowVal[2], "%.0f%%", pc.diskPct);
-    setFmt(S.rowVal[3], "%.0f%%", pc.cpu);
-    setFmt(S.net, "↓ %.1f   ↑ %.1f Мбит/с", pc.netDownMbps, pc.netUpMbps);
+    if (pc.cpuTemp > 0) setFmt(S.rowVal[3], "%.0f%% %.0f°", pc.cpu, pc.cpuTemp);
+    else setFmt(S.rowVal[3], "%.0f%%", pc.cpu);
+    setFmt(S.net, "↓ %.1f  ↑ %.1f", pc.netDownMbps, pc.netUpMbps);
   } else {
     setText(S.rowVal[1], "—"); setText(S.rowSub[1], "");
-    setText(S.rowVal[2], "—"); setText(S.rowVal[3], "—");
-    setText(S.net, "ПК не подключён");
+    setText(S.rowVal[3], "—");
+    setText(S.net, "");
   }
   feedChart();
 }
@@ -1085,6 +1356,10 @@ static const IdlePal IDLE_PAL[SKIN_N] = {
     {0x080D12, 0xE9F6FF, 0x8297A5, 0xFF4E9B, 0x1D3440},
 };
 
+static uint32_t mix(uint32_t a, uint32_t b, uint8_t k) {
+  return lv_color_to_u32(lv_color_mix(C(a), C(b), k)) & 0xFFFFFF;
+}
+
 void skinBuildIdle(lv_obj_t* scr, int baseSkin) {
   fonts();
   styles();
@@ -1094,58 +1369,46 @@ void skinBuildIdle(lv_obj_t* scr, int baseSkin) {
   lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(scr, C(p.bg), 0);
-  S.clock = lab(scr, 0, 10, 320, "--:--", f84b, p.fg, LV_TEXT_ALIGN_CENTER);
-  S.date = lab(scr, 0, 112, 320, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
-  box(scr, 40, 140, 240, 1, p.line);
-  S.wTemp = lab(scr, 4, 152, 100, "", f30b, p.acc, LV_TEXT_ALIGN_RIGHT);
-  S.wDesc = lab(scr, 114, 154, 202, "", f14b, p.fg);
-  S.wSub = lab(scr, 114, 176, 202, "", f9, p.mut);
-  S.host = lab(scr, 0, 216, 320, "ПК выключен", f8, p.mut, LV_TEXT_ALIGN_CENTER);
-}
-
-static const char* weatherText(int c) {
-  if (c == 0) return "Ясно";
-  if (c == 1) return "Малооблачно";
-  if (c == 2) return "Облачно";
-  if (c == 3) return "Пасмурно";
-  if (c == 45 || c == 48) return "Туман";
-  if (c >= 51 && c <= 57) return "Морось";
-  if (c >= 61 && c <= 67) return "Дождь";
-  if (c >= 71 && c <= 77) return "Снег";
-  if (c >= 80 && c <= 82) return "Ливень";
-  if (c == 85 || c == 86) return "Снегопад";
-  if (c >= 95) return "Гроза";
-  return "Погода";
+  S.clock = lab(scr, 0, -2, 320, "--:--", f76b, p.fg, LV_TEXT_ALIGN_CENTER);
+  S.date = lab(scr, 0, 88, 320, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
+  box(scr, 24, 112, 272, 1, p.line);
+  wxPal(p.acc, mix(p.fg, p.mut, 110), p.bg == 0xF4F2EE ? 0x2F6FD6 : mix(0x4CC9F0, p.acc, 210), p.bg);
+  S.wxLong = false;
+  wxNow(scr, 22, 120, 46, lab(scr, 74, 120, 80, "", f30b, p.acc));
+  S.wDesc = lab(scr, 160, 122, 150, "", f14b, p.fg);
+  S.wSub = lab(scr, 160, 142, 150, "", f9, p.mut);
+  box(scr, 24, 172, 272, 1, p.line);
+  S.fcStep = 3;
+  for (int i = 0; i < 4; i++) wxSlot(scr, 16 + i * 74, 176, 66, 22, f9, f9b, p.mut, p.fg);
 }
 
 static void updIdle(const WifiInfo& w) {
+  settingsLock();
+  String city = gSet.cityName;
+  settingsUnlock();
   time_t t = time(nullptr);
   if (t > 1700000000) {
     struct tm tm;
     localtime_r(&t, &tm);
-    char b[40];
+    char b[64];
     strftime(b, sizeof(b), "%H:%M", &tm);
     setText(S.clock, b);
     static const char* wd[7] = {"воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"};
     static const char* mo[12] = {"января", "февраля", "марта", "апреля", "мая", "июня",
                                  "июля", "августа", "сентября", "октября", "ноября", "декабря"};
-    snprintf(b, sizeof(b), "%s, %d %s", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon]);
+    if (city.length()) snprintf(b, sizeof(b), "%s, %d %s · %s", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon], city.c_str());
+    else snprintf(b, sizeof(b), "%s, %d %s", wd[tm.tm_wday], tm.tm_mday, mo[tm.tm_mon]);
     setText(S.date, b);
   }
+  updWeather();
   Weather wx = monitorWeather();
   if (wx.ok) {
-    setFmt(S.wTemp, "%+.0f°", wx.temp);
     setText(S.wDesc, weatherText(wx.code));
-    setFmt(S.wSub, "ощущается %+.0f° · ветер %.0f м/с", wx.feels, wx.wind);
+    setFmt(S.wSub, "ощущается %+.0f° · %.0f м/с", wx.feels, wx.wind);
   } else {
-    setText(S.wTemp, "");
     setText(S.wDesc, w.connected ? "Погода загружается" : "Погоды нет");
     setText(S.wSub, w.connected ? "" : "экран не подключён к Wi-Fi");
   }
-  settingsLock();
-  String city = gSet.cityName;
-  settingsUnlock();
-  setFmt(S.host, "ПК выключен · %s", city.c_str());
 }
 
 // ------------------------------------------------------------------ общее
@@ -1205,6 +1468,7 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
     }
   }
   if (S.host) setText(S.host, pc.online ? pc.host : (S.idx == 7 ? "нет связи" : "нет связи с ПК"));
+  updWeather();
 
   switch (S.idx) {
     case 1: updNeon(pc); break;

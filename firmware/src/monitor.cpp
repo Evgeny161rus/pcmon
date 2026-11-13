@@ -624,6 +624,28 @@ Weather monitorWeather() {
   return c;
 }
 
+bool monitorForecast(int ahead, Weather& out) {
+  if (!statsMux) return false;
+  time_t now = time(nullptr);
+  if (now < 1700000000) return false;
+  bool ok = false;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  if (wxN > 0 && (uint32_t)now >= wxT0) {
+    uint32_t i = ((uint32_t)now - wxT0) / 3600UL + (uint32_t)max(0, ahead);
+    if (i < (uint32_t)wxN) {
+      out.ok = true;
+      out.temp = wxH[i].temp;
+      out.feels = wxH[i].feels;
+      out.wind = wxH[i].wind;
+      out.code = wxH[i].code;
+      out.atMs = millis();
+      ok = true;
+    }
+  }
+  xSemaphoreGive(statsMux);
+  return ok;
+}
+
 // Погода качается в своей задаче: TLS-соединение и разбор страницы занимают
 // до 10 секунд, и если делать это в задаче связи, USB-кадры от ПК не читаются,
 // а экран на это время решает, что ПК пропал.

@@ -87,6 +87,8 @@ struct Weather {
   uint32_t atMs = 0;
 };
 Weather monitorWeather();
+// Прогноз от ПК на час now+ahead (0 = текущий час). false — прогноза на этот час нет.
+bool monitorForecast(int ahead, Weather& out);
 
 void monitorBegin();
 void monitorWifiPoll();
