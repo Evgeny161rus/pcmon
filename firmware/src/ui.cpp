@@ -115,6 +115,7 @@ static bool fcShown = false;      // экран прогноза погоды
 static bool mediaShown = false;   // медиапанель
 static bool nightShown = false;   // отчёт за 12 часов
 static bool launchShown = false;  // быстрый запуск
+static bool calShown = false;     // калибровка сенсора
 static uint32_t fcAt = 0;
 static uint32_t offlineSince = 0;
 static int nightCap = 100;
@@ -1057,6 +1058,124 @@ static void updateNav() {
   }
 }
 
+// ------------------------------------------------------------------ калибровка сенсора
+// 4 крестика по углам; для каждого — среднее сырых координат, затем прямые по МНК:
+// x = a·rawY + b, y = c·rawX + d (в координатах экрана без поворота).
+static const int CAL_PT[4][2] = {{30, 30}, {290, 30}, {290, 210}, {30, 210}};
+static struct {
+  lv_timer_t* timer;
+  lv_obj_t *cross, *msg;
+  int idx, n;
+  long sx, sy;
+  bool waitUp;
+  float raw[4][2];
+  uint32_t doneAt;
+} CAL;
+
+static void calPlace() {
+  lv_obj_set_pos(CAL.cross, CAL_PT[CAL.idx][0] - 15, CAL_PT[CAL.idx][1] - 15);
+  lv_label_set_text_fmt(CAL.msg, "Калибровка сенсора\nКоснитесь центра крестика (%d из 4)", CAL.idx + 1);
+}
+
+static bool calFit() {
+  bool fl = gSet.flip;
+  float mx = 0, my = 0, mrx = 0, mry = 0;
+  float ux[4], uy[4];
+  for (int i = 0; i < 4; i++) {
+    ux[i] = fl ? LCD_W - 1 - CAL_PT[i][0] : CAL_PT[i][0];
+    uy[i] = fl ? LCD_H - 1 - CAL_PT[i][1] : CAL_PT[i][1];
+    mx += ux[i] / 4; my += uy[i] / 4; mrx += CAL.raw[i][0] / 4; mry += CAL.raw[i][1] / 4;
+  }
+  float cxy = 0, vy = 0, cyx = 0, vx = 0;
+  for (int i = 0; i < 4; i++) {
+    cxy += (CAL.raw[i][1] - mry) * (ux[i] - mx);
+    vy += (CAL.raw[i][1] - mry) * (CAL.raw[i][1] - mry);
+    cyx += (CAL.raw[i][0] - mrx) * (uy[i] - my);
+    vx += (CAL.raw[i][0] - mrx) * (CAL.raw[i][0] - mrx);
+  }
+  if (vy < 1 || vx < 1) return false;
+  float a = cxy / vy, c = cyx / vx;
+  if (fabsf(a) < 0.3f || fabsf(a) > 3 || fabsf(c) < 0.3f || fabsf(c) > 3) return false;
+  settingsLock();
+  gSet.calOk = true;
+  gSet.calXA = a;
+  gSet.calXB = mx - a * mry;
+  gSet.calYA = c;
+  gSet.calYB = my - c * mrx;
+  settingsUnlock();
+  settingsSave();
+  displaySetCal(true, gSet.calXA, gSet.calXB, gSet.calYA, gSet.calYB);
+  return true;
+}
+
+static void calTick(lv_timer_t*) {
+  if (CAL.doneAt) {
+    if (millis() - CAL.doneAt > 1800) {
+      displayTouchHold(false);
+      calShown = false;
+      pendingRebuild = true;
+      CAL.doneAt = 0;
+    }
+    return;
+  }
+  int rx, ry;
+  bool down = displayTouchRaw(&rx, &ry);
+  uiActivity();
+  if (CAL.waitUp) {
+    if (!down) CAL.waitUp = false;
+    return;
+  }
+  if (down) {
+    CAL.sx += rx;
+    CAL.sy += ry;
+    CAL.n++;
+    return;
+  }
+  if (CAL.n < 3) return;
+  CAL.raw[CAL.idx][0] = (float)CAL.sx / CAL.n;
+  CAL.raw[CAL.idx][1] = (float)CAL.sy / CAL.n;
+  CAL.sx = CAL.sy = 0;
+  CAL.n = 0;
+  click();
+  if (++CAL.idx < 4) {
+    calPlace();
+    return;
+  }
+  bool ok = calFit();
+  lv_obj_add_flag(CAL.cross, LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(CAL.msg, ok ? "Готово! Сенсор откалиброван" : "Не получилось — запустите калибровку ещё раз");
+  CAL.doneAt = millis();
+}
+
+static void buildCalibration() {
+  lv_obj_set_style_bg_color(scr, C(0x0B0D12), 0);
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  CAL.msg = lv_label_create(scr);
+  lv_obj_set_width(CAL.msg, 280);
+  lv_obj_set_style_text_align(CAL.msg, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(CAL.msg, C(0xF2F4F7), 0);
+  lv_obj_set_style_text_font(CAL.msg, fMedB, 0);
+  lv_obj_align(CAL.msg, LV_ALIGN_CENTER, 0, 0);
+  CAL.cross = obj(scr, 0, 0, 30, 30);
+  lv_obj_set_style_bg_opa(CAL.cross, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(CAL.cross, 2, 0);
+  lv_obj_set_style_border_color(CAL.cross, C(0xFF9F1C), 0);
+  lv_obj_set_style_radius(CAL.cross, LV_RADIUS_CIRCLE, 0);
+  lv_obj_t* h = obj(CAL.cross, -2, 12, 30, 2);
+  lv_obj_set_style_bg_color(h, C(0xFF9F1C), 0);
+  lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
+  lv_obj_t* v = obj(CAL.cross, 12, -2, 2, 30);
+  lv_obj_set_style_bg_color(v, C(0xFF9F1C), 0);
+  lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
+  CAL.idx = CAL.n = 0;
+  CAL.sx = CAL.sy = 0;
+  CAL.waitUp = true;
+  CAL.doneAt = 0;
+  calPlace();
+  displayTouchHold(true);
+  CAL.timer = lv_timer_create(calTick, 20, nullptr);
+}
+
 static void buildAll() {
   settingsLock();
   themeIdx = constrain((int)gSet.skin, 0, skinCount() - 1);
@@ -1071,6 +1190,14 @@ static void buildAll() {
   lv_obj_set_style_pad_all(scr, 0, 0);
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
   lv_screen_load(scr);
+  if (CAL.timer) {
+    lv_timer_delete(CAL.timer);
+    CAL.timer = nullptr;
+  }
+  if (calShown) {
+    buildCalibration();
+    return;
+  }
   if (home) {
     settingsLock();
     int s = gSet.skin;
@@ -1487,6 +1614,7 @@ void uiInit() {
   analogSetPinAttenuation(BAT_PIN, ADC_11db);
   lastActivity = millis();
   displaySetFlip(gSet.flip);
+  if (gSet.calOk) displaySetCal(true, gSet.calXA, gSet.calXB, gSet.calYA, gSet.calYB);
   buildAll();
   displayBacklight(gSet.brightness);
 }
@@ -1620,6 +1748,17 @@ void uiShowScreen(const char* n) {
   else if (!strcmp(n, "night")) uiShowNight(true);
   else if (!strcmp(n, "launch")) uiShowLaunch(true);
   else if (!strcmp(n, "idle")) uiForceIdle(true);
+  else if (!strcmp(n, "cal")) {
+    calShown = true;
+    home = true;
+    pendingRebuild = true;
+  } else if (!strcmp(n, "calreset")) {
+    settingsLock();
+    gSet.calOk = false;
+    settingsUnlock();
+    settingsSave();
+    displaySetCal(false, 0, 0, 0, 0);
+  }
   else if (!strcmp(n, "home")) {
     fcShown = nightShown = mediaShown = launchShown = false;
     uiForceIdle(false);

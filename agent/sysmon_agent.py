@@ -954,7 +954,7 @@ class Agent:
                 self.forecast = {}
                 self._wx_wake.set()
         show = str(data.get("show") or "")
-        if show in ("fc", "media", "night", "launch", "idle", "home"):
+        if show in ("fc", "media", "night", "launch", "idle", "home", "cal", "calreset"):
             cmd["show"] = show
         if not cmd:
             return self.screen_state()

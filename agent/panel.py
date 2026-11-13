@@ -116,6 +116,8 @@ dialog::backdrop{background:#0009}
 <section id="set"><h1>Настройки</h1><p class="sub" id="ver">—</p>
 <div class="card"><div class="row" style="margin-top:0"><input type="checkbox" id="auto"><label for="auto">Запускать вместе с Windows</label></div>
 <div class="note" id="appnote"></div></div>
+<h2>Сенсор экрана</h2><div class="card"><div class="row" style="margin-top:0"><button class="b p" data-show="cal">Откалибровать сенсор</button><button class="b" data-show="calreset">Сбросить калибровку</button></div>
+<div class="note">На экране по очереди появятся 4 крестика — коснитесь центра каждого (лучше стилусом или ногтем). Поправки сохранятся в плате.</div></div>
 <h2>Температура процессора</h2><div class="card"><div class="s" id="hw">—</div>
 <div class="note">Её даёт HWiNFO (значок температуры в трее или «Shared Memory Support» в настройках) либо LibreHardwareMonitor.</div></div>
 </section>

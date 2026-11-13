@@ -1758,6 +1758,7 @@ static lv_obj_t* mediaBtn(lv_obj_t* scr, int x, int y, int w, int h, uint32_t bg
   lv_obj_set_style_transform_pivot_x(b, w / 2, 0);
   lv_obj_set_style_transform_pivot_y(b, h / 2, 0);
   lv_obj_add_event_cb(b, mediaBtnCb, LV_EVENT_CLICKED, (void*)(intptr_t)key);
+  lv_obj_set_ext_click_area(b, 8);   // промахнуться пальцем по краю труднее
   lv_obj_t* l = lv_label_create(b);
   lv_label_set_text(l, sym);
   lv_obj_set_style_text_font(l, f, 0);
@@ -1781,7 +1782,7 @@ void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(scr, C(p.bg), 0);
 
-  mediaBtn(scr, 272, 4, 40, 30, card, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
+  mediaBtn(scr, 262, 2, 54, 40, card, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
   // обложка 72×72 (или заглушка с нотой), справа — программа, трек, исполнитель
   S.mCoverPh = box(scr, 14, 10, COVER_PX, COVER_PX, card, 12, p.line, 1);
   lv_obj_t* note = lv_label_create(S.mCoverPh);
@@ -2060,7 +2061,7 @@ void skinBuildLaunch(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(scr, C(p.bg), 0);
   lab(scr, 14, 9, 150, "Быстрый запуск", f14b, p.fg);
-  mediaBtn(scr, 272, 4, 40, 30, S.lCard, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
+  mediaBtn(scr, 262, 2, 54, 40, S.lCard, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
   S.lHint = lab(scr, 0, 110, 320, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
   for (int i = 0; i < APP_MAX; i++) {
     lv_obj_t* t = box(scr, 0, 0, 96, 92, S.lCard, 14, p.line, 1);

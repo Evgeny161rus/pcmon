@@ -15,6 +15,9 @@ struct Settings {
   uint8_t skin = 0;       // скин главного экрана
   bool flip = false;      // экран перевёрнут на 180°
   bool alertOn = true;    // тревоги по перегреву и памяти
+  // калибровка сенсора: x = calXA·rawY + calXB, y = calYA·rawX + calYB (без поворота); calOk=false — заводская
+  bool calOk = false;
+  float calXA = 0, calXB = 0, calYA = 0, calYB = 0;
   uint8_t alertCpu = 85;  // °C
   uint8_t alertGpu = 83;  // °C
   uint8_t alertRam = 95;  // %
