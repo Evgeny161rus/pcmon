@@ -101,7 +101,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Create checksums
-        run: cd dist && sha256sum pcmon-case-*.stl PCMonitor-Setup.exe PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
+        run: cd dist && sha256sum PCMonitor-Setup.exe PCMonitor.exe PCMonitor-folder.zip pcmon-firmware-full.bin pcmon-firmware-app.bin > SHA256.txt && cat SHA256.txt
       - name: Update latest download
         uses: softprops/action-gh-release@v2
         with:
@@ -115,8 +115,6 @@ jobs:
             **pcmon-firmware-full.bin** — прошивка платы целиком, пишется с адреса 0x0 (например, `esptool.py --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin` или любым веб-прошивальщиком ESP32).
             **pcmon-firmware-app.bin** — только приложение, с адреса 0x10000: для обновления, когда загрузчик уже стоит.
 
-            **pcmon-case-shell.stl / back.stl** — корпус: рамка с окном экрана и спинка-клин с наклоном 20° (4 самореза M3 через отверстия платы). Исходник для своих размеров — case/pcmon_case.scad (OpenSCAD).
-
             Контрольные суммы — в SHA256.txt. Сборка исходников: ${{ github.sha }}.
           make_latest: true
           overwrite_files: true
@@ -126,6 +124,4 @@ jobs:
             dist/PCMonitor-folder.zip
             dist/pcmon-firmware-full.bin
             dist/pcmon-firmware-app.bin
-            dist/pcmon-case-shell.stl
-            dist/pcmon-case-back.stl
             dist/SHA256.txt
