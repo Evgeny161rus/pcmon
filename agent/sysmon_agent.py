@@ -38,7 +38,7 @@ import psutil
 import requests
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -786,145 +786,134 @@ class Agent:
                 pass
         return None
 
-        # 1. Gismeteo (текущая погода + прогноз по 3-часовым шагам, развёрнутый по часам)
-        try:
-            r_now = requests.get(f"https://www.gismeteo.ru/{gm_slug}/now/", headers=headers, timeout=8)
-            if r_now.status_code == 200:
-                t_html = r_now.text
-                m_t = re.search(r'now-weather[^>]*>\s*<temperature-value value="(-?\d+)"', t_html)
-                m_f = re.search(r'now-feel[^>]*>.*?<temperature-value value="(-?\d+)"', t_html, re.S)
-                m_d = re.search(r'now-desc[^>]*>\s*([^<]+)', t_html)
-                m_w = re.search(r'now-info-item[^>]*>.*?Ветер.*?<speed-value value="(\d+)"', t_html, re.S)
-                if m_t:
-                    cur_t = int(m_t.group(1))
-                    cur_f = int(m_f.group(1)) if m_f else cur_t
-                    cur_w = int(m_w.group(1)) if m_w else 0
-                    cur_c = self._ru_weather_code(m_d.group(1) if m_d else "")
-                    rows.append([cur_t, cur_f, cur_w, cur_c])
+    WX_DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wx_debug")
 
-            r_3d = requests.get(f"https://www.gismeteo.ru/{gm_slug}/3-days/", headers=headers, timeout=8)
-            if r_3d.status_code == 200:
-                t3 = r_3d.text
-                m_icon = re.search(r'data-row="icon-tooltip"(.*?)widget-row', t3, re.S)
-                icons = re.findall(r'data-tooltip="([^"]+)"', m_icon.group(1)) if m_icon else []
-                m_air = re.search(r'data-row="temperature-air"(.*?)data-row=', t3, re.S)
-                air = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', m_air.group(1))] if m_air else []
-                m_feel = re.search(r'data-row="temperature-heat-index"(.*?)data-row=', t3, re.S)
-                feel = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', m_feel.group(1))] if m_feel else []
-                m_wind = re.search(r'data-row="wind"(.*?)(?:data-row=|</section>)', t3, re.S)
-                wind = [int(x) for x in re.findall(r'wind-speed.*?<speed-value value="(\d+)"', m_wind.group(1), re.S)] if m_wind else []
-                n = min(len(air), len(feel), len(wind), len(icons))
-                for i in range(n):
-                    item = [air[i], feel[i], wind[i], self._ru_weather_code(icons[i])]
-                    for _ in range(3):
-                        if len(rows) < 48:
-                            rows.append(list(item))
-            if rows:
-                while len(rows) < 48:
-                    rows.append(list(rows[-1]))
-                return rows[:48]
+    def _wx_save(self, name: str, text: str) -> None:
+        """Последняя скачанная страница погоды — для разбора, если сайт поменяет вёрстку."""
+        try:
+            os.makedirs(self.WX_DEBUG_DIR, exist_ok=True)
+            with open(os.path.join(self.WX_DEBUG_DIR, name), "w", encoding="utf-8") as f:
+                f.write(text)
         except Exception:
             pass
 
-        # 2. Резерв: Pogoda.Mail.ru
-        try:
-            r_mail = requests.get(f"https://pogoda.mail.ru/prognoz/{mail_slug}/", headers=headers, timeout=8)
-            m = re.search(r"window\.__PRELOADED_STATE__PAGE\s*=\s*(\{.*?\});?\s*</script>", r_mail.text, re.S)
+    @staticmethod
+    def _gm_row(html: str, row: str) -> str:
+        m = re.search(r'data-row="%s"(.*?)(?=data-row="|</section>|$)' % re.escape(row), html, re.S)
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _gm_items(chunk: str) -> list[str]:
+        parts = re.split(r'<div[^>]*class="[^"]*row-item[^"]*"', chunk)[1:]
+        return parts
+
+    def _parse_gismeteo(self, html: str, day0: float) -> list[tuple[int, int, int, int, int]]:
+        """Столбцы страницы Gismeteo -> [(unix, темп, ощущ, ветер, код)].
+        Время каждого столбца берётся из строки времени страницы; при переходе
+        через полночь (час уменьшился) начинается следующий день."""
+        times = []
+        for it in self._gm_items(self._gm_row(html, "datetime") or self._gm_row(html, "time")):
+            txt = re.sub(r"<[^>]+>", " ", it)
+            m = re.search(r"(\d{1,2})\s*:?\s*(\d{2})?", txt)
             if m:
-                d = json.loads(m.group(1)).get("data", {})
-                cur = d.get("current") or {}
-                if "temperature" in cur:
-                    t0_v = int(float(str(cur.get("temperature", 0)).replace("+", "")))
-                    f0_v = int(float(str(cur.get("tempe_comf", t0_v)).replace("+", "")))
-                    w0_v = int(float(str(cur.get("wind_speed", 0))))
-                    c0_v = self._ru_weather_code(str(cur.get("description") or cur.get("descr") or ""))
-                    rows.append([t0_v, f0_v, w0_v, c0_v])
-                for h in d.get("hforecast") or []:
-                    tv = int(float(str(h.get("temperature", 0)).replace("+", "")))
-                    fv = int(float(str(h.get("tempe_comf", tv)).replace("+", "")))
-                    wv = int(float(str(h.get("wind_speed", 0))))
-                    cv = self._ru_weather_code(str(h.get("description") or h.get("descr") or ""))
-                    if len(rows) < 48:
-                        rows.append([tv, fv, wv, cv])
-                if rows:
-                    while len(rows) < 48:
-                        rows.append(list(rows[-1]))
-                    return rows[:48]
-        except Exception:
-            pass
+                times.append(int(m.group(1)))
+        air = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', self._gm_row(html, "temperature-air"))]
+        feel = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', self._gm_row(html, "temperature-heat-index"))]
+        wind = [int(x) for x in re.findall(r'<speed-value value="(\d+)"', self._gm_row(html, "wind"))]
+        icons = re.findall(r'data-tooltip="([^"]+)"', self._gm_row(html, "icon-tooltip"))
+        n = min(len(times), len(air))
+        if n < 2:
+            return []
+        out, day, prev = [], 0, -1
+        for i in range(n):
+            h = times[i]
+            if h < prev:
+                day += 1
+            prev = h
+            ts = int(day0 + day * 86400 + h * 3600)
+            out.append((ts, air[i], feel[i] if i < len(feel) else air[i],
+                        wind[i] if i < len(wind) else 0,
+                        self._ru_weather_code(icons[i]) if i < len(icons) else 2))
+        return out
 
-        return []
+    @staticmethod
+    def _hourly(cols: list[tuple[int, int, int, int, int]], start: int, hours: int = 48) -> list[list[int]]:
+        """Из столбцов через 1–3 часа делает почасовой ряд: температура и ветер
+        интерполируются между соседними столбцами, явление — от ближайшего прошедшего."""
+        cols = sorted(cols)
+        rows = []
+        for k in range(hours):
+            t = start + k * 3600
+            if t < cols[0][0] or t > cols[-1][0]:
+                if t < cols[0][0] and cols[0][0] - t <= 3 * 3600:
+                    c = cols[0]
+                    rows.append([c[1], c[2], c[3], c[4]])
+                    continue
+                break
+            for j in range(len(cols) - 1):
+                if cols[j][0] <= t <= cols[j + 1][0]:
+                    a, b = cols[j], cols[j + 1]
+                    f = (t - a[0]) / max(1, b[0] - a[0])
+                    rows.append([round(a[1] + (b[1] - a[1]) * f), round(a[2] + (b[2] - a[2]) * f),
+                                 round(a[3] + (b[3] - a[3]) * f), a[4]])
+                    break
+            else:
+                c = cols[-1]
+                rows.append([c[1], c[2], c[3], c[4]])
+        return rows
 
-    def _city_coords(self) -> tuple[float, float] | None:
-        """Координаты выбранного города (геокодер Open-Meteo), кэшируются в city.json."""
-        cfg = self.city_cfg
-        if isinstance(cfg.get("lat"), float) and isinstance(cfg.get("lon"), float):
-            return cfg["lat"], cfg["lon"]
-        if self.args.lat or self.args.lon:
-            return self.args.lat, self.args.lon
-        name = str(cfg.get("city") or "").strip()
-        if not name:
-            return None
-        r = requests.get("https://geocoding-api.open-meteo.com/v1/search",
-                         params={"name": name, "count": 10, "language": "ru", "format": "json"}, timeout=8)
-        res = [x for x in (r.json().get("results") or []) if x.get("country_code") == "RU"]
-        if not res:
-            return None
-        # одноимённых городов бывает несколько — берём самый крупный
-        best = max(res, key=lambda x: x.get("population") or 0)
-        cfg["lat"], cfg["lon"] = float(best["latitude"]), float(best["longitude"])
-        self._save_city_cfg()
-        return cfg["lat"], cfg["lon"]
-
-    def _fetch_openmeteo(self, lat: float, lon: float) -> tuple[int, list[list[int]]]:
-        """Почасовой прогноз на двое суток. Каждая строка привязана к своему часу
-        (время в ответе — Unix), поэтому сдвига по времени быть не может."""
-        r = requests.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": lat, "longitude": lon,
-            "hourly": "temperature_2m,apparent_temperature,wind_speed_10m,weather_code",
-            "wind_speed_unit": "ms", "forecast_days": 3, "timeformat": "unixtime", "timezone": "GMT",
-        }, timeout=10)
-        h = r.json()["hourly"]
-        now = time.time()
-        t0, rows = 0, []
-        for i, t in enumerate(h["time"]):
-            if t + 3600 <= now or len(rows) >= 48:
-                continue
-            vals = (h["temperature_2m"][i], h["apparent_temperature"][i], h["wind_speed_10m"][i], h["weather_code"][i])
-            if any(v is None for v in vals):
-                break   # дальше прогноза нет — не придумываем
-            if not rows:
-                t0 = int(t)
-            rows.append([round(vals[0]), round(vals[1]), round(vals[2]), int(vals[3])])
-        return t0, rows
+    def _fetch_gismeteo(self) -> list[list[int]]:
+        """Почасовой прогноз с Gismeteo (страницы «сегодня», «завтра», «3 дня»)."""
+        gm = self.city_cfg.get("gm") or ""
+        if not gm:
+            return []
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                   "Accept-Language": "ru-RU,ru;q=0.9"}
+        lt = time.localtime()
+        today0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        cols: dict[int, tuple] = {}
+        errors = []
+        for page, d0, name in (("3-days/", today0, "gm_3days.html"),
+                               ("", today0, "gm_today.html"),
+                               ("tomorrow/", today0 + 86400, "gm_tomorrow.html")):
+            try:
+                r = requests.get(f"https://www.gismeteo.ru/{gm}/{page}", headers=headers, timeout=10)
+                self._wx_save(name, r.text)
+                if r.status_code != 200:
+                    errors.append(f"{page or 'today'}: HTTP {r.status_code}")
+                    continue
+                for c in self._parse_gismeteo(r.text, d0):
+                    cols[c[0]] = c       # более подробные страницы уточняют 3-дневную
+            except Exception as exc:
+                errors.append(f"{page or 'today'}: {exc}"[:60])
+        cur = self._fetch_ru_current()
+        start = int(time.time() // 3600 * 3600)
+        if cur:
+            cols[start] = (start, *cur)
+        if errors:
+            self.forecast_error = "; ".join(errors)[:120]
+        if len(cols) < 2:
+            return [cur] if cur else []
+        return self._hourly(list(cols.values()), start)
 
     def _forecast_loop(self) -> None:
-        """Раз в полчаса берёт прогноз и отдаёт экрану: когда ПК выключен, экран
-        сам показывает погоду на текущий час.
-
-        Основной источник — Open-Meteo: почасовой ряд с точным временем каждой строки.
-        Если он недоступен, с Gismeteo / Погоды Mail.ru берётся только текущая погода,
-        одной строкой на текущий час: растягивать её на двое суток нельзя — экран
-        выдавал бы её за прогноз."""
+        """Раз в полчаса берёт почасовой прогноз с Gismeteo и отдаёт экрану:
+        когда ПК выключен, экран сам показывает погоду на текущий час.
+        Каждая строка — свой час начиная с текущего (t0), без растягивания."""
         while True:
             delay = 1800
             try:
-                rows, t0 = [], 0
-                try:
-                    coords = self._city_coords()
-                    if coords:
-                        t0, rows = self._fetch_openmeteo(*coords)
-                        self.forecast_source = "Open-Meteo"
-                except Exception as exc:
-                    self.forecast_error = f"open-meteo: {exc}"[:80]
-                if not rows:
-                    cur = self._fetch_ru_current()
-                    if cur:
-                        t0, rows = int(time.time() // 3600 * 3600), [cur]
-                        self.forecast_source = "Gismeteo/Mail.ru (только сейчас)"
-                        delay = 600
+                self.forecast_error = ""
+                rows = self._fetch_gismeteo()
+                src = "Gismeteo"
+                if len(rows) <= 1:
+                    cur = rows[0] if rows else self._fetch_ru_current()
+                    rows = [cur] if cur else []
+                    src = "Gismeteo/Mail.ru (только сейчас)"
+                    delay = 600
                 if rows:
-                    self.forecast = {"wx": 1, "t0": t0, "h": rows}
+                    self.forecast = {"wx": 1, "t0": int(time.time() // 3600 * 3600), "h": rows}
+                    self.forecast_source = src
                 else:
                     delay = 300
             except Exception as exc:
@@ -1015,7 +1004,9 @@ class Agent:
             if h:
                 break
         if not h:
-            self.hwinfo_diag = "нет общей памяти (HWiNFO не запущен или Shared Memory Support выключен)"
+            running = any("hwinfo" in (pr.info.get("name") or "").lower() for pr in psutil.process_iter(["name"]))
+            self.hwinfo_diag = ("HWiNFO запущен, но Shared Memory Support выключен" if running
+                                else "HWiNFO не запущен")
             return -1.0, -1.0
         ptr = k32.MapViewOfFile(h, 0x0004, 0, 0, 0)
         if not ptr:
