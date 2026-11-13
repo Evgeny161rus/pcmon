@@ -1015,10 +1015,12 @@ class Agent:
             if h:
                 break
         if not h:
+            self.hwinfo_diag = "нет общей памяти (HWiNFO не запущен или Shared Memory Support выключен)"
             return -1.0, -1.0
         ptr = k32.MapViewOfFile(h, 0x0004, 0, 0, 0)
         if not ptr:
             k32.CloseHandle(h)
+            self.hwinfo_diag = "общая память HWiNFO не открывается"
             return -1.0, -1.0
         cpu_primary: list[float] = []
         cpu_other: list[float] = []
@@ -1029,6 +1031,7 @@ class Agent:
             # и то же для показаний — всего 44 байта.
             hdr = ctypes.string_at(ptr, 44)
             magic, _, _, _, _, _, _, off_r, sz_r, num_r = struct.unpack("<4sIIqIIIIII", hdr)
+            self.hwinfo_diag = f"SM2 magic={magic!r} readings={num_r} size={sz_r}"
             if magic == b"HWiS" and 0 < num_r < 2000 and 64 <= sz_r <= 2048:
                 raw = ctypes.string_at(ptr + off_r, sz_r * num_r)
                 for i in range(num_r):
@@ -1048,8 +1051,8 @@ class Agent:
                         cpu_other.append(float(val))
                     if "gpu" in lbl or "гп" in lbl:
                         gpu_values.append(float(val))
-        except Exception:
-            pass
+        except Exception as e:
+            self.hwinfo_diag = f"ошибка разбора SM2: {e}"
         finally:
             k32.UnmapViewOfFile(ptr)
             k32.CloseHandle(h)
@@ -1789,7 +1792,7 @@ def make_handler(agent: Agent):
                 with agent.lock:
                     self._json({"ok": True, "speed": dict(agent.speed)})
             elif path == "/api/health":
-                self._json({"ok": True, "name": APP_NAME, "version": VERSION, "time": int(time.time()), "app": bool(AUTOSTART_CMD), "usb": agent.usb.status(), "forecastHours": len(agent.forecast.get("h", [])), "forecastSource": agent.forecast_source, "forecastError": agent.forecast_error, "cpuTemp": agent._lhm.get("cpu", -1.0)})
+                self._json({"ok": True, "name": APP_NAME, "version": VERSION, "time": int(time.time()), "app": bool(AUTOSTART_CMD), "usb": agent.usb.status(), "forecastHours": len(agent.forecast.get("h", [])), "forecastSource": agent.forecast_source, "forecastError": agent.forecast_error, "cpuTemp": agent._lhm.get("cpu", -1.0), "hwinfo": getattr(agent, "hwinfo_diag", "")})
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
 
