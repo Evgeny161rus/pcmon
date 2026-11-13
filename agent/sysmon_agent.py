@@ -38,7 +38,7 @@ import psutil
 import requests
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -665,7 +665,7 @@ class Agent:
         ip = self.screen_addr()
         wifi = bool(self.screen_ip) and time.time() - self.screen_seen < 6
         out = {"ok": True, "link": "usb" if usb else ("wifi" if wifi else "none"), "port": self.usb.port,
-               "fw": h.get("fw", ""), "ip": ip, "skin": h.get("skin"), "flip": h.get("flip"), "call": h.get("call"),
+               "fw": h.get("fw", ""), "ip": ip, "skin": h.get("skin"), "flip": h.get("flip"),
                "city": h.get("city") or self.city_cfg["city"],
                "gm": h.get("gm") or self.city_cfg["gm"],
                "mail": h.get("mail") or self.city_cfg["mail"],
@@ -673,7 +673,7 @@ class Agent:
         if not usb and wifi:
             try:
                 st = requests.get(f"http://{ip}/api/status", timeout=1.5).json()
-                out.update({"skin": st.get("skin"), "flip": st.get("flip"), "call": st.get("call"),
+                out.update({"skin": st.get("skin"), "flip": st.get("flip"),
                             "city": st.get("city") or self.city_cfg["city"],
                             "gm": st.get("gm") or self.city_cfg["gm"],
                             "mail": st.get("mail") or self.city_cfg["mail"]})
@@ -687,8 +687,6 @@ class Agent:
             cmd["skin"] = int(clamp(int(data["skin"]), 0, len(SKIN_NAMES) - 1))
         if "flip" in data:
             cmd["flip"] = 1 if data["flip"] else 0
-        if "call" in data:
-            cmd["call"] = "".join(ch for ch in str(data["call"]).upper() if ch.isalnum() or ch in "/-")[:8]
         if "city" in data or "gm" in data:
             cname = str(data.get("city") or "").strip()[:36]
             gm = str(data.get("gm") or "").strip()[:64]
@@ -807,31 +805,19 @@ class Agent:
         parts = re.split(r'<div[^>]*class="[^"]*row-item[^"]*"', chunk)[1:]
         return parts
 
-    def _parse_gismeteo(self, html: str, day0: float) -> list[tuple[int, int, int, int, int]]:
-        """Столбцы страницы Gismeteo -> [(unix, темп, ощущ, ветер, код)].
-        Время каждого столбца берётся из строки времени страницы; при переходе
-        через полночь (час уменьшился) начинается следующий день."""
-        times = []
-        for it in self._gm_items(self._gm_row(html, "datetime") or self._gm_row(html, "time")):
-            txt = re.sub(r"<[^>]+>", " ", it)
-            m = re.search(r"(\d{1,2})\s*:?\s*(\d{2})?", txt)
-            if m:
-                times.append(int(m.group(1)))
+    def _parse_gismeteo(self, html: str) -> list[tuple[int, int, int, int, int]]:
+        """Столбцы страницы Gismeteo «сегодня»/«завтра» -> [(unix, темп, ощущ, ветер, код)].
+        У каждого столбца есть точное время (атрибут timestamp), по нему и привязываемся."""
+        m = re.search(r'widget-row-datetime-time(.*?)widget-row-icon', html, re.S)
+        times = [int(x) for x in re.findall(r'timestamp="(\d+)"', m.group(1))] if m else []
         air = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', self._gm_row(html, "temperature-air"))]
         feel = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', self._gm_row(html, "temperature-heat-index"))]
         wind = [int(x) for x in re.findall(r'<speed-value value="(\d+)"', self._gm_row(html, "wind"))]
         icons = re.findall(r'data-tooltip="([^"]+)"', self._gm_row(html, "icon-tooltip"))
         n = min(len(times), len(air))
-        if n < 2:
-            return []
-        out, day, prev = [], 0, -1
+        out = []
         for i in range(n):
-            h = times[i]
-            if h < prev:
-                day += 1
-            prev = h
-            ts = int(day0 + day * 86400 + h * 3600)
-            out.append((ts, air[i], feel[i] if i < len(feel) else air[i],
+            out.append((times[i], air[i], feel[i] if i < len(feel) else air[i],
                         wind[i] if i < len(wind) else 0,
                         self._ru_weather_code(icons[i]) if i < len(icons) else 2))
         return out
@@ -869,21 +855,20 @@ class Agent:
             return []
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                    "Accept-Language": "ru-RU,ru;q=0.9"}
-        lt = time.localtime()
-        today0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
         cols: dict[int, tuple] = {}
         errors = []
-        for page, d0, name in (("3-days/", today0, "gm_3days.html"),
-                               ("", today0, "gm_today.html"),
-                               ("tomorrow/", today0 + 86400, "gm_tomorrow.html")):
+        for page, name in (("", "gm_today.html"), ("tomorrow/", "gm_tomorrow.html")):
             try:
                 r = requests.get(f"https://www.gismeteo.ru/{gm}/{page}", headers=headers, timeout=10)
                 self._wx_save(name, r.text)
                 if r.status_code != 200:
                     errors.append(f"{page or 'today'}: HTTP {r.status_code}")
                     continue
-                for c in self._parse_gismeteo(r.text, d0):
-                    cols[c[0]] = c       # более подробные страницы уточняют 3-дневную
+                parsed = self._parse_gismeteo(r.text)
+                if not parsed:
+                    errors.append(f"{page or 'today'}: не разобрано")
+                for c in parsed:
+                    cols[c[0]] = c
             except Exception as exc:
                 errors.append(f"{page or 'today'}: {exc}"[:60])
         cur = self._fetch_ru_current()
@@ -1567,7 +1552,6 @@ h2{font-size:13px;margin:0 0 12px;font-weight:600;color:var(--mut);text-transfor
 .row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .row label{color:var(--text)}
 input[type=text],select{background:var(--card2);border:1px solid var(--line);border-radius:8px;color:var(--text);font:inherit;padding:8px 10px}
-#call{width:120px;text-transform:uppercase}
 #city{width:170px}
 input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
@@ -1589,7 +1573,6 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 <div class="card"><h2>Экран</h2>
 <div class="skins" id="skins"></div>
 <div class="row"><input type="checkbox" id="flip"><label for="flip">Перевернуть на 180°</label></div>
-<div class="row"><label for="call">Позывной</label><input type="text" id="call" maxlength="8" autocomplete="off"><button class="b" id="callb">Сохранить</button></div>
 <div class="row"><label for="city">Погода (город РФ)</label><input type="text" id="city" list="citylist" placeholder="Город РФ" autocomplete="off"><datalist id="citylist"></datalist><button class="b" id="cityb">Выбрать</button></div>
 <div class="note" id="scrnote"></div></div>
 <div class="card"><h2>Компьютер</h2>
@@ -1609,7 +1592,7 @@ b.innerHTML=`<span class="sw" style="background:${s[1]}"><i style="width:22px;he
 b.lastChild.textContent=s[0];b.onclick=async()=>{mark(i);show(await post('/api/screen/set',{skin:i}))};$('skins').appendChild(b)});
 function mark(i){[...$('skins').children].forEach((b,k)=>b.setAttribute('aria-pressed',k===i?'true':'false'))}
 function pct(id,v,on){$(id).textContent=on?v.toFixed(0)+'%':'—';$(id+'b').style.width=(on?v:0)+'%'}
-let callEdit=false,cityEdit=false,volDrag=false;
+let cityEdit=false,volDrag=false;
 const PRESET_CITIES=[
   ["Геленджик","Краснодарский край","weather-gelendzhik-5213","gelendzhik"],
   ["Краснодар","Краснодарский край","weather-krasnodar-5136","krasnodar"],
@@ -1647,7 +1630,7 @@ function fillCities(list){const dl=$('citylist');dl.innerHTML='';list.forEach(c=
 fillCities(PRESET_CITIES);
 function show(s){if(!s||!s.ok)return;const on=s.link!=='none';$('dot').className='dot'+(on?' on':'');
 $('link').textContent=s.link==='usb'?`Экран подключён по USB (${s.port}), прошивка ${s.fw||'?'}`:s.link==='wifi'?`Экран на связи по Wi-Fi (${s.ip})`:'Экран не найден — проверьте кабель';
-if(s.skin!=null)mark(s.skin);if(s.flip!=null)$('flip').checked=!!s.flip;if(s.call!=null&&!callEdit)$('call').value=s.call;if(s.city!=null&&!cityEdit)$('city').value=s.city;
+if(s.skin!=null)mark(s.skin);if(s.flip!=null)$('flip').checked=!!s.flip;if(s.city!=null&&!cityEdit)$('city').value=s.city;
 $('scrnote').textContent=on?'Свайп по экрану тоже меняет скин. Касание открывает меню.':'Настройки применятся, когда экран появится на связи.'}
 async function refresh(){try{const d=await j('/api/stats');
 $('host').textContent=`${d.host} · ${d.os}`;
@@ -1663,8 +1646,6 @@ $('speed').textContent=s.testing?s.stage:(s.error||(s.down?`↓ ${s.down.toFixed
 }catch(e){$('host').textContent='агент не отвечает'}}
 async function refreshScreen(){try{show(await j('/api/screen/state'))}catch(e){}}
 $('flip').onchange=async e=>show(await post('/api/screen/set',{flip:e.target.checked?1:0}));
-$('call').oninput=()=>callEdit=true;
-$('callb').onclick=async()=>{callEdit=false;show(await post('/api/screen/set',{call:$('call').value.trim().toUpperCase()}))};
 let cityTimer=null;
 $('city').oninput=e=>{cityEdit=true;const q=e.target.value.trim();clearTimeout(cityTimer);if(q.length<2){fillCities(PRESET_CITIES);return}
 cityTimer=setTimeout(async()=>{try{const r=await j('/api/weather/cities?q='+encodeURIComponent(q));if(r&&r.cities&&r.cities.length)fillCities(r.cities.map(c=>[c.city,c.region,c.gm,c.mail]))}catch(err){}},250)};

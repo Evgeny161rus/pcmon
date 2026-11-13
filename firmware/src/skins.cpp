@@ -2,7 +2,7 @@
 //   0 «Приборы»     — два стрелочных циферблата
 //   1 «Неон»        — три светящихся кольца
 //   2 «Минимализм»  — светлый фон, одна крупная цифра
-//   3 «Ретро-радио» — стрелочный индикатор, табло, позывной
+//   3 «Ретро-радио» — стрелочный индикатор, табло, погода
 //   4 «Часы»        — крупные часы и четыре цветных кольца
 //   5 «Терминал»    — зелёная консоль sysmon --live
 //   6 «Плитки»      — четыре яркие карточки и строка состояния
@@ -84,7 +84,7 @@ struct State {
   lv_obj_t *pct;
   Bar mbar[3];
   // ретро
-  lv_obj_t *vfd[3], *led[2][12], *ledLbl[2], *rx, *tx, *vol, *volArc, *call;
+  lv_obj_t *vfd[3], *led[2][12], *ledLbl[2], *rx, *tx, *vol, *volArc;
   // терминал / лампы
   lv_obj_t *term[9], *cursor;
   lv_obj_t *nixClk[4], *nixVal[3][2];
@@ -569,7 +569,7 @@ static void buildNeon(lv_obj_t* scr) {
   S.big = lab(scr, cx - 36, cy - 22, 72, "—", f30b, NEON[0], LV_TEXT_ALIGN_CENTER);
   S.bigSub = lab(scr, cx - 38, cy + 13, 76, "CPU", f8, 0xB9B3E0, LV_TEXT_ALIGN_CENTER);
 
-  wxPal(0xFFE14D, 0x22E3FF, 0xFF4DF5, 0x07060D);
+  wxPal(0xFFE14D, 0xE4E0FF, 0x22E3FF, 0x07060D);
   wxNow(scr, 10, 4, 24, lab(scr, 40, 7, 60, "", f16b, 0xFFFFFF), lab(scr, 100, 9, 96, "", f9, 0xB9B3E0));
   S.clock = lab(scr, 200, 6, 110, "--:--", f20b, 0xFFFFFF, LV_TEXT_ALIGN_RIGHT);
 
@@ -714,7 +714,7 @@ static void buildRetro(lv_obj_t* scr) {
 
   // люминесцентное табло
   lv_obj_t* vp = box(scr, 208, 10, 102, 120, PANEL, 6, EDGE, 2);
-  static const char* rows[3] = {"GPU", "t° CPU", "ПОГОДА"};
+  static const char* rows[3] = {"GPU", "t° CPU", "RAM"};
   for (int i = 0; i < 3; i++) {
     int y = 6 + i * 37;
     S.vfdLbl[i] = lab(vp, 8, y - 2, 84, rows[i], f8, DIM);
@@ -734,19 +734,19 @@ static void buildRetro(lv_obj_t* scr) {
     for (int i = 0; i < 12; i++) S.led[r][i] = box(scr, 208 + (i * 17) / 2, ly[r], 6, 9, 0x2C2924, 1);
   }
 
-  // позывной, RX/TX, громкость
-  lv_obj_t* plate = box(scr, 10, 196, 66, 34, 0x2A2620, 4, 0x4A443A, 1);
-  settingsLock();
-  String call = gSet.callsign;
-  settingsUnlock();
-  S.call = lab(plate, 0, 8, 64, call.c_str(), f14b, 0xE8DCC0, LV_TEXT_ALIGN_CENTER);
+  // погода (подсвеченная шкала, как у прибора), RX/TX, громкость
+  lv_obj_t* wp = box(scr, 10, 194, 104, 38, 0xF3E6C4, 5, EDGE, 2);
+  lv_obj_set_style_bg_grad_color(wp, C(0xE6D19C), 0);
+  lv_obj_set_style_bg_grad_dir(wp, LV_GRAD_DIR_VER, 0);
+  wxPal(0xD9480F, 0x6B6150, 0x1C6E8C, 0xEDDBB0);
+  wxNow(wp, 5, 4, 28, lab(wp, 36, 1, 60, "", f20b, 0x1C1A17, LV_TEXT_ALIGN_RIGHT),
+        lab(wp, 30, 21, 66, "", f8, 0x4A4030, LV_TEXT_ALIGN_RIGHT));
 
-  lv_obj_t* rp = box(scr, 84, 196, 116, 34, PANEL, 4, EDGE, 2);
-  lab(rp, 6, 4, 20, "RX", f8, DIM);
-  S.rx = lab(rp, 22, 1, 50, "—", f14b, VFD);
-  lab(rp, 6, 18, 20, "TX", f8, DIM);
-  S.tx = lab(rp, 22, 15, 50, "—", f14b, VFD);
-  lab(rp, 64, 8, 46, "Мбит/с", f8, DIM, LV_TEXT_ALIGN_RIGHT);
+  lv_obj_t* rp = box(scr, 120, 194, 80, 38, PANEL, 4, EDGE, 2);
+  lab(rp, 6, 5, 20, "RX", f8, DIM);
+  S.rx = lab(rp, 24, 2, 50, "—", f14b, VFD, LV_TEXT_ALIGN_RIGHT);
+  lab(rp, 6, 20, 20, "TX", f8, DIM);
+  S.tx = lab(rp, 24, 17, 50, "—", f14b, VFD, LV_TEXT_ALIGN_RIGHT);
 
   lab(scr, 208, 196, 56, "ГРОМК.", f8, 0xC9C1B0);
   S.vol = lab(scr, 208, 211, 56, "—", f14b, 0xE8DCC0);
@@ -782,14 +782,8 @@ static void updRetro(const PcStats& pc) {
     setText(S.vfdLbl[1], "t° CPU");
     setText(S.vfd[1], "—");
   }
-  Weather w = monitorWeather();
-  if (w.ok) {
-    setFmt(S.vfd[2], "%+.0f°", w.temp);
-    setFmt(S.vfdLbl[2], "%s", weatherText(w.code));
-  } else {
-    setText(S.vfd[2], "—");
-    setText(S.vfdLbl[2], "ПОГОДА");
-  }
+  if (on) setFmt(S.vfd[2], "%.0f%%", pc.ramPct);
+  else setText(S.vfd[2], "—");
 
   if (on) {
     setFmt(S.ledLbl[0], "ОЗУ %.0f%%", pc.ramPct);
@@ -1155,59 +1149,141 @@ static void updImpulse(const PcStats& pc) {
 }
 
 // ------------------------------------------------------------------ 9. Шина
+// Схема системной платы: процессор с выводами в центре, четыре модуля по углам,
+// дорожки с переходными отверстиями и бегущие по ним «пакеты».
+struct BusPath {
+  int16_t x[3], y[3];
+};
+static BusPath busPaths[4];
+
+static void busDotExec(void* var, int32_t v) {
+  lv_obj_t* o = (lv_obj_t*)var;
+  const BusPath* p = (const BusPath*)lv_obj_get_user_data(o);
+  if (!p) return;
+  int l1 = abs(p->x[1] - p->x[0]) + abs(p->y[1] - p->y[0]);
+  int l2 = abs(p->x[2] - p->x[1]) + abs(p->y[2] - p->y[1]);
+  int d = (int)((int64_t)v * (l1 + l2) / 1000);
+  int x, y;
+  if (d <= l1) {
+    x = p->x[0] + (p->x[1] - p->x[0]) * d / max(1, l1);
+    y = p->y[0] + (p->y[1] - p->y[0]) * d / max(1, l1);
+  } else {
+    d -= l1;
+    x = p->x[1] + (p->x[2] - p->x[1]) * d / max(1, l2);
+    y = p->y[1] + (p->y[2] - p->y[1]) * d / max(1, l2);
+  }
+  lv_obj_set_pos(o, x - 3, y - 3);
+}
+
+static void busTrace(lv_obj_t* scr, int i, int x0, int y0, int x1, int y1, int x2, int y2, uint32_t col, bool toChip) {
+  const int t = 2;
+  box(scr, min(x0, x1), y0 - 1, abs(x1 - x0) + t, t, col);
+  box(scr, x1 - 1, min(y1, y2), t, abs(y2 - y1) + 1, col);
+  lv_obj_t* via = box(scr, x1 - 4, y1 - 4, 8, 8, 0x081018, LV_RADIUS_CIRCLE, col, 2);
+  (void)via;
+  BusPath& p = busPaths[i];
+  if (toChip) {
+    p = {{(int16_t)x0, (int16_t)x1, (int16_t)x2}, {(int16_t)y0, (int16_t)y1, (int16_t)y2}};
+  } else {
+    p = {{(int16_t)x2, (int16_t)x1, (int16_t)x0}, {(int16_t)y2, (int16_t)y1, (int16_t)y0}};
+  }
+  lv_obj_t* dot = box(scr, x0 - 3, y0 - 3, 6, 6, 0xFFFFFF, LV_RADIUS_CIRCLE);
+  lv_obj_set_style_shadow_width(dot, 8, 0);
+  lv_obj_set_style_shadow_color(dot, C(col), 0);
+  lv_obj_set_style_shadow_opa(dot, LV_OPA_80, 0);
+  lv_obj_set_user_data(dot, &p);
+  lv_anim_t a;
+  lv_anim_init(&a);
+  lv_anim_set_var(&a, dot);
+  lv_anim_set_exec_cb(&a, busDotExec);
+  lv_anim_set_values(&a, 0, 1000);
+  lv_anim_set_duration(&a, 1400);
+  lv_anim_set_delay(&a, i * 350);
+  lv_anim_set_repeat_delay(&a, 600);
+  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_start(&a);
+}
+
+static lv_obj_t* busCard(lv_obj_t* scr, int i, int x, int y, const char* title, const char* bus, uint32_t col) {
+  lv_obj_t* c = box(scr, x, y, 96, 62, 0x0E1A25, 8, 0x1E3A4C, 1);
+  box(c, 0, 8, 3, 46, col, 1);
+  lab(c, 10, 5, 50, title, f9b, 0xA9BCCB);
+  lab(c, 46, 6, 44, bus, f8, 0x5F7689, LV_TEXT_ALIGN_RIGHT);
+  S.rowVal[i] = lab(c, 10, 18, 82, "—", f20b, col);
+  S.rowSub[i] = lab(c, 10, 42, 82, "", f8, 0x8295A8);
+  S.cellBar[i] = bar(c, 10, 55, 78, 3, 0x1E3A4C, col);
+  return c;
+}
+
 static void buildOrbit(lv_obj_t* scr) {
-  const uint32_t MUT = 0x8295A8, TRACE = 0x24465B;
+  const uint32_t MUT = 0x8295A8, CHIP = 0x38BFD5;
+  static const uint32_t COL[4] = {0x34D5FF, 0x45E0B2, 0xFFB65A, 0xFF66AA};
   lv_obj_set_style_bg_color(scr, C(0x081018), 0);
+  // едва заметная сетка платы
+  for (int x = 20; x < 320; x += 20) box(scr, x, 30, 1, 210, 0x0C1822);
+  for (int y = 40; y < 240; y += 20) box(scr, 0, y, 320, 1, 0x0C1822);
+
   wxPal(0xFFC83D, 0xCFE0EE, 0x34D5FF, 0x081018);
   wxNow(scr, 12, 3, 22, lab(scr, 38, 6, 50, "", f14b, 0xEAF5FF), lab(scr, 82, 8, 110, "", f9, MUT));
   S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xEAF5FF, LV_TEXT_ALIGN_RIGHT);
-  box(scr, 12, 28, 296, 1, 0x1C3344);
+  box(scr, 0, 28, 320, 1, 0x1C3344);
 
-  // Дорожки уходят под модули, как на схеме системной платы.
-  box(scr, 104, 68, 13, 2, TRACE); box(scr, 110, 68, 2, 26, TRACE); box(scr, 112, 92, 5, 2, TRACE);
-  box(scr, 203, 68, 13, 2, TRACE); box(scr, 209, 68, 2, 32, TRACE); box(scr, 204, 98, 7, 2, TRACE);
-  box(scr, 104, 180, 13, 2, TRACE); box(scr, 110, 144, 2, 38, TRACE); box(scr, 112, 144, 5, 2, TRACE);
-  box(scr, 203, 180, 13, 2, TRACE); box(scr, 209, 144, 2, 38, TRACE); box(scr, 204, 144, 7, 2, TRACE);
+  // выводы процессора
+  const int cx0 = 116, cy0 = 84, cw = 88, ch = 76;
+  for (int k = 0; k < 7; k++) {
+    int px = cx0 + 10 + k * 11;
+    box(scr, px, cy0 - 5, 4, 5, 0x5A6B7A);
+    box(scr, px, cy0 + ch, 4, 5, 0x5A6B7A);
+  }
+  for (int k = 0; k < 5; k++) {
+    int py = cy0 + 10 + k * 13;
+    box(scr, cx0 - 5, py, 5, 4, 0x5A6B7A);
+    box(scr, cx0 + cw, py, 5, 4, 0x5A6B7A);
+  }
+  lv_obj_t* core = box(scr, cx0, cy0, cw, ch, 0x10202D, 6, CHIP, 2);
+  lv_obj_set_style_shadow_width(core, 16, 0);
+  lv_obj_set_style_shadow_color(core, C(CHIP), 0);
+  lv_obj_set_style_shadow_opa(core, LV_OPA_30, 0);
+  box(core, 5, 5, 5, 5, CHIP, LV_RADIUS_CIRCLE);
+  lab(core, 0, 6, cw - 4, "CPU", f9b, 0x8FD9E6, LV_TEXT_ALIGN_CENTER);
+  S.big = lab(core, 0, 22, cw - 4, "—", f30b, 0xF2FAFF, LV_TEXT_ALIGN_CENTER);
+  S.bigSub = lab(core, 0, 55, cw - 4, "", f8, MUT, LV_TEXT_ALIGN_CENTER);
 
-  lv_obj_t* gpu = box(scr, 10, 42, 94, 54, 0x101C28, 7, 0x25485A, 1);
-  lab(gpu, 8, 5, 76, "GPU", f8, 0x91A7B7);
-  S.rowVal[0] = lab(gpu, 8, 18, 78, "—", f16b, 0x34D5FF);
-  S.rowSub[0] = lab(gpu, 8, 38, 78, "", f8, 0x8295A8);
+  // модули и дорожки
+  busCard(scr, 0, 8, 34, "GPU", "PCIe", COL[0]);
+  busCard(scr, 1, 216, 34, "ОЗУ", "DDR", COL[1]);
+  busCard(scr, 2, 8, 172, "ДИСК", "NVMe", COL[2]);
+  busCard(scr, 3, 216, 172, "СЕТЬ", "LAN", COL[3]);
+  busTrace(scr, 0, 104, 64, 136, 64, 136, cy0 - 5, COL[0], false);
+  busTrace(scr, 1, 216, 64, 184, 64, 184, cy0 - 5, COL[1], false);
+  busTrace(scr, 2, 104, 204, 136, 204, 136, cy0 + ch + 5, COL[2], false);
+  busTrace(scr, 3, 216, 204, 184, 204, 184, cy0 + ch + 5, COL[3], true);
 
-  lv_obj_t* ram = box(scr, 216, 42, 94, 54, 0x101C28, 7, 0x25485A, 1);
-  lab(ram, 8, 5, 76, "ОЗУ", f8, 0x91A7B7);
-  S.rowVal[1] = lab(ram, 8, 18, 78, "—", f16b, 0x45E0B2);
-  S.rowSub[1] = lab(ram, 8, 38, 78, "", f8, 0x8295A8);
-
-  lv_obj_t* disk = box(scr, 10, 154, 94, 54, 0x101C28, 7, 0x25485A, 1);
-  lab(disk, 8, 5, 76, "NVME / DISK", f8, 0x91A7B7);
-  S.rowVal[2] = lab(disk, 8, 18, 78, "—", f16b, 0xFFB65A);
-  S.rowSub[2] = lab(disk, 8, 38, 78, "", f8, 0x8295A8);
-
-  lv_obj_t* net = box(scr, 216, 154, 94, 54, 0x101C28, 7, 0x25485A, 1);
-  lab(net, 8, 5, 76, "NETWORK", f8, 0x91A7B7);
-  S.rowVal[3] = lab(net, 8, 18, 78, "—", f14b, 0xFF66AA);
-  S.rowSub[3] = lab(net, 8, 38, 78, "", f8, 0x8295A8);
-
-  lv_obj_t* core = box(scr, 116, 82, 88, 72, 0x122333, 9, 0x38BFD5, 2);
-  box(core, 7, 7, 4, 4, 0x38BFD5, 1); box(core, 77, 7, 4, 4, 0x38BFD5, 1);
-  box(core, 7, 61, 4, 4, 0x38BFD5, 1); box(core, 77, 61, 4, 4, 0x38BFD5, 1);
-  lab(core, 12, 8, 64, "CORE / 01", f8, 0x8295A8, LV_TEXT_ALIGN_CENTER);
-  S.big = lab(core, 5, 24, 78, "—", f20b, 0xF2FAFF, LV_TEXT_ALIGN_CENTER);
-  S.bigSub = lab(core, 6, 51, 76, "CPU", f8, 0x38BFD5, LV_TEXT_ALIGN_CENTER);
-  box(scr, 12, 218, 296, 1, 0x1C3344);
-  S.net = lab(scr, 14, 222, 292, "SYSTEM BUS · ↓ —  ↑ — Мбит/с", f8, 0x38BFD5, LV_TEXT_ALIGN_CENTER);
+  // температура и частота по бокам от процессора
+  lab(scr, 12, 104, 92, "ТЕМП. CPU", f8, MUT);
+  S.cellVal[0] = lab(scr, 12, 117, 96, "—", f20b, 0xFF8A5B);
+  lab(scr, 216, 104, 92, "ЧАСТОТА", f8, MUT, LV_TEXT_ALIGN_RIGHT);
+  S.cellVal[1] = lab(scr, 212, 117, 96, "—", f20b, 0xEAF5FF, LV_TEXT_ALIGN_RIGHT);
+  S.cellVal[2] = lab(scr, 12, 144, 96, "", f8, MUT);
+  S.cellVal[3] = lab(scr, 212, 144, 96, "", f8, MUT, LV_TEXT_ALIGN_RIGHT);
 }
 
 static void updOrbit(const PcStats& pc) {
   bool on = pc.online;
   if (on) {
     setFmt(S.big, "%.0f%%", pc.cpu);
-    if (pc.cpuTemp > 0) setFmt(S.bigSub, "CPU · %.0f°C", pc.cpuTemp); else setText(S.bigSub, "CPU");
+    setText(S.bigSub, "нагрузка");
+    if (pc.cpuTemp > 0) setFmt(S.cellVal[0], "%.0f°C", pc.cpuTemp);
+    else setText(S.cellVal[0], "—");
+    if (pc.cpuFreqGHz > 0.1f) setFmt(S.cellVal[1], "%.1f ГГц", pc.cpuFreqGHz);
+    else setText(S.cellVal[1], "—");
+    if (pc.gpuTemp > 0) setFmt(S.cellVal[2], "GPU %.0f°C", pc.gpuTemp);
+    else setText(S.cellVal[2], "");
+    if (pc.uptimeSec > 0) setFmt(S.cellVal[3], "в работе %luч %02luм", (unsigned long)(pc.uptimeSec / 3600), (unsigned long)(pc.uptimeSec / 60 % 60));
+    else setText(S.cellVal[3], "");
     if (pc.hasGpu) {
       setFmt(S.rowVal[0], "%.0f%%", pc.gpuPct);
-      if (pc.gpuTemp > 0) setFmt(S.rowSub[0], "%.0f°C · V %.0f%%", pc.gpuTemp, pc.vramPct);
-      else setFmt(S.rowSub[0], "VRAM %.0f%%", pc.vramPct);
+      setFmt(S.rowSub[0], "%.1f / %.0f ГБ", pc.vramUsedGB, pc.vramTotalGB);
     } else { setText(S.rowVal[0], "—"); setText(S.rowSub[0], "нет GPU"); }
     setFmt(S.rowVal[1], "%.0f%%", pc.ramPct);
     setFmt(S.rowSub[1], "%.1f / %.0f ГБ", pc.ramUsedGB, pc.ramTotalGB);
@@ -1215,12 +1291,15 @@ static void updOrbit(const PcStats& pc) {
     setFmt(S.rowSub[2], "%.0f / %.0f ГБ", pc.diskUsedGB, pc.diskTotalGB);
     setFmt(S.rowVal[3], "↓ %.1f", pc.netDownMbps);
     setFmt(S.rowSub[3], "↑ %.1f Мбит/с", pc.netUpMbps);
-    setFmt(S.net, "SYSTEM BUS · ↓ %.1f  ↑ %.1f Мбит/с", pc.netDownMbps, pc.netUpMbps);
   } else {
-    setText(S.big, "—"); setText(S.bigSub, "CPU");
-    for (int i = 0; i < 4; ++i) { setText(S.rowVal[i], "—"); setText(S.rowSub[i], "нет связи"); }
-    setText(S.net, "SYSTEM BUS · ПК не подключён");
+    setText(S.big, "—"); setText(S.bigSub, "нет связи");
+    for (int i = 0; i < 4; ++i) { setText(S.rowVal[i], "—"); setText(S.rowSub[i], ""); }
+    setText(S.cellVal[0], "—"); setText(S.cellVal[1], "—"); setText(S.cellVal[2], ""); setText(S.cellVal[3], "");
   }
+  setBar(S.cellBar[0], on && pc.hasGpu ? pc.gpuPct : 0);
+  setBar(S.cellBar[1], on ? pc.ramPct : 0);
+  setBar(S.cellBar[2], on ? pc.diskPct : 0);
+  setBar(S.cellBar[3], on ? min(100.0f, pc.netDownMbps) : 0);
 }
 
 // ------------------------------------------------------------------ 10. HUD

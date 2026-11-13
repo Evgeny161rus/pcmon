@@ -21,4 +21,4 @@ void uiSetSkin(int idx);
 void uiForceIdle(bool on);   // показать заставку принудительно (для проверки)
 void uiShowMenu(int page);
 void uiReloadSettings();
-void uiRequest(int skin, int flip, const char* call);   // из любого потока
+void uiRequest(int skin, int flip);   // из любого потока

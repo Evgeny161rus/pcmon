@@ -1337,7 +1337,7 @@ static void refreshSettingsPage(const PcStats& pc, const WifiInfo& w) {
   s += String(ESP.getFreePsram() / 1024);
   s += "K · экран ";
   s += String(millis() / 1000);
-  s += " с · v1.4";
+  s += " с · v1.5";
   if (W.infoSet) lv_label_set_text(W.infoSet, s.c_str());
 }
 
@@ -1527,33 +1527,17 @@ void uiSetSkin(int idx);
 
 // Запрос настроек из потока связи (USB): применяется в uiLoop.
 static volatile int reqSkin = -1, reqFlip = -1;
-static volatile bool reqCallSet = false;
-static char reqCall[12];
-
-void uiRequest(int skin, int flip, const char* call) {
-  if (call) {
-    strlcpy(reqCall, call, sizeof(reqCall));
-    reqCallSet = true;
-  }
+void uiRequest(int skin, int flip) {
   if (flip >= 0) reqFlip = flip ? 1 : 0;
   if (skin >= 0) reqSkin = skin;
 }
 
 static void applyRequests() {
-  if (reqFlip >= 0 || reqCallSet) {
+  if (reqFlip >= 0) {
     settingsLock();
-    if (reqFlip >= 0) gSet.flip = reqFlip != 0;
-    if (reqCallSet) {
-      String c = reqCall;
-      c.trim();
-      c.toUpperCase();
-      c.replace("\"", "");
-      c.replace("\\", "");
-      gSet.callsign = c.substring(0, 8);
-    }
+    gSet.flip = reqFlip != 0;
     settingsUnlock();
     reqFlip = -1;
-    reqCallSet = false;
     settingsSave();
     uiReloadSettings();
   }

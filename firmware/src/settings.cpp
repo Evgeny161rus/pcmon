@@ -20,7 +20,6 @@ void settingsBegin() {
   gSet.sdLog = prefs.getBool("sdlog", false);
   gSet.skin = prefs.getUChar("skin", 0);
   gSet.flip = prefs.getBool("flip", false);
-  gSet.callsign = prefs.getString("call", "PCMON");
   gSet.alertOn = prefs.getBool("al_on", true);
   gSet.alertCpu = prefs.getUChar("al_cpu", 85);
   gSet.alertGpu = prefs.getUChar("al_gpu", 83);
@@ -44,7 +43,6 @@ bool settingsSave() {
   prefs.putBool("sdlog", gSet.sdLog);
   prefs.putUChar("skin", gSet.skin);
   prefs.putBool("flip", gSet.flip);
-  prefs.putString("call", gSet.callsign);
   prefs.putBool("al_on", gSet.alertOn);
   prefs.putUChar("al_cpu", gSet.alertCpu);
   prefs.putUChar("al_gpu", gSet.alertGpu);

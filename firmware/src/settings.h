@@ -14,7 +14,6 @@ struct Settings {
   bool sdLog = false;
   uint8_t skin = 0;       // скин главного экрана
   bool flip = false;      // экран перевёрнут на 180°
-  String callsign = "PCMON";  // подпись в скине «Ретро-радио»
   bool alertOn = true;    // тревоги по перегреву и памяти
   uint8_t alertCpu = 85;  // °C
   uint8_t alertGpu = 83;  // °C

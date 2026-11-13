@@ -361,12 +361,12 @@ static void handleUsbLine(char* line, size_t len) {
   JsonDocument doc;
   if (deserializeJson(doc, (const char*)line, len)) return;
   if (doc["set"].is<JsonObject>()) {
-    // настройки из программы на ПК: {"set":{"skin":1,"flip":0,"call":"PCMON","city":"...","gm":"...","mail":"..."}}
+    // настройки из программы на ПК: {"set":{"skin":1,"flip":0,"city":"...","gm":"...","mail":"..."}}
     JsonObject s = doc["set"];
     if (!s["city"].isNull() || !s["gm"].isNull() || !s["mail"].isNull()) {
       monitorSetCity(s["city"] | (const char*)nullptr, s["gm"] | (const char*)nullptr, s["mail"] | (const char*)nullptr);
     }
-    uiRequest(s["skin"] | -1, s["flip"] | -1, s["call"] | (const char*)nullptr);
+    uiRequest(s["skin"] | -1, s["flip"] | -1);
     return;
   }
   if (doc["wx"] | 0) {      // почасовой прогноз от компаньона
@@ -706,8 +706,8 @@ static void netTask(void*) {
     if (now >= nextHello) {
       nextHello = now + 5000;
       settingsLock();
-      String hello = "{\"hello\":1,\"fw\":\"1.4.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
-                     ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"call\":\"" + gSet.callsign + "\",\"city\":\"" + gSet.cityName +
+      String hello = "{\"hello\":1,\"fw\":\"1.5.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
+                     ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"city\":\"" + gSet.cityName +
                      "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + "}";
       settingsUnlock();
       usbSend(hello);
