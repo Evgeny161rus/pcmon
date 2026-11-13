@@ -28,6 +28,7 @@ static bool wasOnline = false;
 static volatile int reqVolume = -1;
 static volatile int reqMute = -1;
 static volatile bool reqSpeed = false;
+static volatile int reqMedia = -1;
 
 // ---- связь по USB-кабелю (тот же порт, что и отладочный вывод)
 static const size_t USB_BUF = 4096;
@@ -153,6 +154,13 @@ static void applyCommands() {
     if (usbActive()) usbSend(String("{\"cmd\":\"mute\",\"mute\":") + (mute ? "true" : "false") + "}");
     else postJson("/api/volume", String("{\"mute\":") + (mute ? "true" : "false") + "}");
   }
+  int mk = reqMedia;
+  if (mk >= 0) {
+    reqMedia = -1;
+    static const char* keys[3] = {"prev", "play", "next"};
+    if (usbActive()) usbSend(String("{\"cmd\":\"media\",\"key\":\"") + keys[mk] + "\"}");
+    else postJson("/api/media", String("{\"key\":\"") + keys[mk] + "\"}");
+  }
   if (reqSpeed) {
     reqSpeed = false;
     if (usbActive()) usbSend("{\"cmd\":\"speedtest\"}");
@@ -213,6 +221,12 @@ static void parseStats(JsonDocument& doc, float linkMs, bool viaUsb) {
 
   n.volume = doc["volumeLevel"] | 0;
   n.muted = doc["muted"] | false;
+  JsonObject md = doc["media"];
+  if (!md.isNull()) {
+    copyStr(n.mediaApp, sizeof(n.mediaApp), md["app"] | "");
+    copyStr(n.mediaTitle, sizeof(n.mediaTitle), md["title"] | "");
+    n.mediaPlaying = md["playing"] | false;
+  }
   n.pingMs = doc["ping"] | 0.0f;
 
   JsonArray top = doc["top"];
@@ -706,7 +720,7 @@ static void netTask(void*) {
     if (now >= nextHello) {
       nextHello = now + 5000;
       settingsLock();
-      String hello = "{\"hello\":1,\"fw\":\"1.5.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
+      String hello = "{\"hello\":1,\"fw\":\"1.6.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
                      ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"city\":\"" + gSet.cityName +
                      "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + "}";
       settingsUnlock();
@@ -785,6 +799,17 @@ void monitorRequestMute(bool mute) {
 }
 
 void monitorRequestSpeedtest() { reqSpeed = true; }
+
+void monitorRequestMedia(int key) {
+  if (key < 0 || key > 2) return;
+  reqMedia = key;
+  if (key == 1 && statsMux) {   // плей/пауза — сразу меняем значок, ПК подтвердит
+    xSemaphoreTake(statsMux, portMAX_DELAY);
+    st.mediaPlaying = !st.mediaPlaying;
+    st.rev++;
+    xSemaphoreGive(statsMux);
+  }
+}
 
 void monitorForgetAgent() {
   settingsLock();

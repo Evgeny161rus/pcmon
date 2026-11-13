@@ -20,6 +20,7 @@ void uiToast(const String& text);
 void uiSetSkin(int idx);
 void uiForceIdle(bool on);   // показать заставку принудительно (для проверки)
 void uiShowForecast(bool on);   // открыть/закрыть экран прогноза
+void uiShowMedia(bool on);      // открыть/закрыть медиапанель
 void uiShowMenu(int page);
 void uiReloadSettings();
 void uiRequest(int skin, int flip);   // из любого потока

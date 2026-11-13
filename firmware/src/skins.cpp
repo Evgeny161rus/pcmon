@@ -107,6 +107,11 @@ struct State {
   lv_obj_t* fcChart;
   lv_chart_series_t* fcSer;
   lv_obj_t *fcMin, *fcMax, *fcNow;
+  // медиапанель
+  lv_obj_t *mApp, *mTitle, *mPlayIcon, *mPlayBtn, *mVolLbl, *mMuteIcon;
+  Bar mVol;
+  void (*mKey)(int) = nullptr;
+  uint32_t mAcc = 0, mFg = 0;
   bool wxLong = false;   // описание с «ощущается»
 };
 
@@ -1616,6 +1621,92 @@ static void updForecast() {
   lv_chart_refresh(S.fcChart);
 }
 
+// ------------------------------------------------------------------ медиапанель
+// Открывается свайпом вверх/вниз по главному экрану. Кнопки зовут onKey:
+// 0/1/2 — пред./плей-пауза/след., 3/4/5 — громкость −/выкл./+, 9 — закрыть.
+static const int MEDIA = 102;
+
+static void mediaBtnCb(lv_event_t* e) {
+  int k = (int)(intptr_t)lv_event_get_user_data(e);
+  if (S.mKey) S.mKey(k);
+}
+
+static lv_obj_t* mediaBtn(lv_obj_t* scr, int x, int y, int w, int h, uint32_t bg, uint32_t border, int key,
+                          const char* sym, const lv_font_t* f, uint32_t fc) {
+  lv_obj_t* b = box(scr, x, y, w, h, bg, h >= 60 ? LV_RADIUS_CIRCLE : 10, border, border ? 1 : 0);
+  lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_bg_opa(b, LV_OPA_70, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_scale(b, 240, LV_STATE_PRESSED);
+  lv_obj_set_style_transform_pivot_x(b, w / 2, 0);
+  lv_obj_set_style_transform_pivot_y(b, h / 2, 0);
+  lv_obj_add_event_cb(b, mediaBtnCb, LV_EVENT_CLICKED, (void*)(intptr_t)key);
+  lv_obj_t* l = lv_label_create(b);
+  lv_label_set_text(l, sym);
+  lv_obj_set_style_text_font(l, f, 0);
+  lv_obj_set_style_text_color(l, C(fc), 0);
+  lv_obj_center(l);
+  return l;
+}
+
+void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = MEDIA;
+  S.mKey = onKey;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  bool light = p.bg == 0xF4F2EE;
+  uint32_t card = mix(p.bg, p.fg, light ? 235 : 225);
+  S.mAcc = p.acc;
+  S.mFg = p.fg;
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+
+  lab(scr, 14, 10, 200, "Сейчас играет", f9, p.mut);
+  mediaBtn(scr, 272, 4, 40, 30, card, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
+  S.mApp = lab(scr, 14, 28, 250, "", f14b, p.acc);
+  S.mTitle = lab(scr, 14, 50, 292, "", f20b, p.fg);
+  lv_label_set_long_mode(S.mTitle, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(S.mTitle, 52);
+
+  mediaBtn(scr, 40, 118, 64, 64, card, p.line, 0, LV_SYMBOL_PREV, &lv_font_montserrat_20, p.fg);
+  S.mPlayIcon = mediaBtn(scr, 120, 110, 80, 80, p.acc, 0, 1, LV_SYMBOL_PLAY, &lv_font_montserrat_28, p.bg);
+  S.mPlayBtn = lv_obj_get_parent(S.mPlayIcon);
+  lv_obj_set_style_shadow_width(S.mPlayBtn, 18, 0);
+  lv_obj_set_style_shadow_color(S.mPlayBtn, C(p.acc), 0);
+  lv_obj_set_style_shadow_opa(S.mPlayBtn, LV_OPA_40, 0);
+  mediaBtn(scr, 216, 118, 64, 64, card, p.line, 2, LV_SYMBOL_NEXT, &lv_font_montserrat_20, p.fg);
+
+  mediaBtn(scr, 14, 200, 44, 32, card, p.line, 3, LV_SYMBOL_MINUS, &lv_font_montserrat_16, p.fg);
+  S.mVolLbl = lab(scr, 68, 198, 150, "Громкость —", f9, p.mut);
+  S.mVol = bar(scr, 68, 216, 150, 6, mix(p.bg, p.fg, 200), p.acc);
+  S.mMuteIcon = mediaBtn(scr, 226, 200, 40, 32, card, p.line, 4, LV_SYMBOL_VOLUME_MAX, &lv_font_montserrat_16, p.fg);
+  mediaBtn(scr, 272, 200, 36, 32, card, p.line, 5, LV_SYMBOL_PLUS, &lv_font_montserrat_16, p.fg);
+}
+
+static void updMedia(const PcStats& pc) {
+  if (!pc.online) {
+    setText(S.mApp, "ПК не на связи");
+    setText(S.mTitle, "");
+  } else if (pc.mediaApp[0]) {
+    setText(S.mApp, pc.mediaApp);
+    setText(S.mTitle, pc.mediaTitle[0] ? pc.mediaTitle : (pc.mediaPlaying ? "звучит" : "на паузе"));
+  } else {
+    setText(S.mApp, "Тишина");
+    setText(S.mTitle, "Нажмите «плей», чтобы продолжить");
+  }
+  setText(S.mPlayIcon, pc.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+  if (pc.online) {
+    if (pc.muted) setText(S.mVolLbl, "Звук выключен");
+    else setFmt(S.mVolLbl, "Громкость %d%%", pc.volume);
+  } else {
+    setText(S.mVolLbl, "Громкость —");
+  }
+  setBar(S.mVol, pc.online && !pc.muted ? pc.volume : 0);
+  setText(S.mMuteIcon, pc.muted ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX);
+}
+
 // Попадает ли касание в блок погоды текущего скина (значок, температура, прогноз).
 bool skinWeatherHit(int x, int y) {
   lv_obj_t* objs[3 + 8 * 2];
@@ -1669,6 +1760,10 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
   }
   if (S.idx == FCAST) {
     updForecast();
+    return;
+  }
+  if (S.idx == MEDIA) {
+    updMedia(pc);
     return;
   }
 

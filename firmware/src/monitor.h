@@ -62,6 +62,10 @@ struct PcStats {
   char speedStage[32] = "";
   char speedError[48] = "";
 
+  // что сейчас звучит на ПК
+  char mediaApp[24] = "";
+  char mediaTitle[72] = "";
+  bool mediaPlaying = false;
   char top1[28] = "";
   float top1cpu = 0;
   char top2[28] = "";
@@ -98,6 +102,8 @@ WifiInfo monitorWifi();
 void monitorRequestVolume(int level);
 void monitorRequestMute(bool mute);
 void monitorRequestSpeedtest();
+// Медиаклавиша на ПК: 0 — предыдущий трек, 1 — плей/пауза, 2 — следующий.
+void monitorRequestMedia(int key);
 void monitorForgetAgent();
 bool monitorAgentConfigured();
 void monitorSetCity(const char* name, const char* gm, const char* mail);

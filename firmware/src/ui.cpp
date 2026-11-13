@@ -111,6 +111,7 @@ static bool pendingRebuild = false;
 // Заставка: ПК молчит дольше 20 секунд (или включена принудительно для проверки).
 static bool idleShown = false, idleForce = false;
 static bool fcShown = false;      // экран прогноза погоды
+static bool mediaShown = false;   // медиапанель
 static uint32_t fcAt = 0;
 static uint32_t offlineSince = 0;
 static int nightCap = 100;
@@ -645,9 +646,44 @@ static void nextSkin(int dir) {
   settingsSave();
 }
 
+// Кнопки медиапанели
+static void mediaKey(int k) {
+  click();
+  if (k >= 0 && k <= 2) {
+    monitorRequestMedia(k);
+  } else if (k == 3 || k == 5) {
+    PcStats pc = monitorSnapshot();
+    monitorRequestVolume(constrain(pc.volume + (k == 3 ? -5 : 5), 0, 100));
+  } else if (k == 4) {
+    monitorRequestMute(!monitorSnapshot().muted);
+  } else if (k == 9) {
+    mediaShown = false;
+    pendingRebuild = true;
+  }
+}
+
+static void mediaGestureCb(lv_event_t*) {
+  lv_indev_t* in = lv_indev_active();
+  lv_dir_t d = lv_indev_get_gesture_dir(in);
+  if (d != LV_DIR_TOP && d != LV_DIR_BOTTOM) return;
+  mediaShown = false;
+  pendingRebuild = true;
+  lv_indev_wait_release(in);
+  click();
+}
+
 static void homeGestureCb(lv_event_t*) {
   lv_indev_t* in = lv_indev_active();
   lv_dir_t d = lv_indev_get_gesture_dir(in);
+  if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх/вниз — медиапанель
+    gestureAt = millis();
+    fcShown = false;
+    mediaShown = true;
+    pendingRebuild = true;
+    lv_indev_wait_release(in);
+    click();
+    return;
+  }
   if (d != LV_DIR_LEFT && d != LV_DIR_RIGHT) return;
   gestureAt = millis();
   nextSkin(d == LV_DIR_LEFT ? 1 : -1);
@@ -1026,6 +1062,12 @@ static void buildAll() {
     settingsLock();
     int s = gSet.skin;
     settingsUnlock();
+    if (mediaShown) {
+      skinBuildMedia(scr, s, mediaKey);
+      lv_obj_add_event_cb(scr, mediaGestureCb, LV_EVENT_GESTURE, nullptr);
+      skinUpdate(monitorSnapshot(), monitorWifi());
+      return;
+    }
     if (fcShown) skinBuildForecast(scr, s);
     else if (idleShown) skinBuildIdle(scr, s);
     else skinBuild(scr, s);
@@ -1356,7 +1398,7 @@ static void refreshSettingsPage(const PcStats& pc, const WifiInfo& w) {
   s += String(ESP.getFreePsram() / 1024);
   s += "K · экран ";
   s += String(millis() / 1000);
-  s += " с · v1.5";
+  s += " с · v1.6";
   if (W.infoSet) lv_label_set_text(W.infoSet, s.c_str());
 }
 
@@ -1412,7 +1454,7 @@ static bool homeBlinkOnly() {
   settingsLock();
   int s = gSet.skin;
   settingsUnlock();
-  return home && !idleShown && !fcShown && s == 5;
+  return home && !idleShown && !fcShown && !mediaShown && s == 5;
 }
 
 // ------------------------------------------------------------------ публичное
@@ -1465,7 +1507,12 @@ void uiLoop() {
   bool wantIdle = idleForce || (offlineSince && now - offlineSince > 20000UL);
   if (home && wantIdle != idleShown) {
     idleShown = wantIdle;
-    if (!fcShown) pendingRebuild = true;
+    if (!fcShown && !mediaShown) pendingRebuild = true;
+  }
+  // медиапанель закрывается через 30 с без касаний
+  if (mediaShown && (!home || now - lastActivity > 30000UL)) {
+    mediaShown = false;
+    if (home) pendingRebuild = true;
   }
   // прогноз сам закрывается через 30 с
   if (fcShown && (!home || now - fcAt > 30000UL)) {
@@ -1537,6 +1584,14 @@ void uiActivity() {
     settingsUnlock();
     displayBacklight(min(b, nightCap));
   }
+}
+
+void uiShowMedia(bool on) {
+  mediaShown = on;
+  fcShown = false;
+  home = true;
+  pendingRebuild = true;
+  uiActivity();
 }
 
 void uiShowForecast(bool on) {

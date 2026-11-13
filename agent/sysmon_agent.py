@@ -38,7 +38,7 @@ import psutil
 import requests
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -281,6 +281,72 @@ class WifiReader:
         return out
 
 
+# --------------------------------------------------------------------------- медиа
+MEDIA_VK = {"prev": 0xB1, "play": 0xB3, "next": 0xB0}
+MEDIA_APPS = {
+    "spotify.exe": "Spotify", "chrome.exe": "Chrome", "msedge.exe": "Edge", "firefox.exe": "Firefox",
+    "browser.exe": "Яндекс Браузер", "opera.exe": "Opera", "vlc.exe": "VLC", "aimp.exe": "AIMP",
+    "foobar2000.exe": "foobar2000", "wmplayer.exe": "Windows Media Player", "music.ui.exe": "Музыка",
+    "microsoft.media.player.exe": "Медиаплеер", "telegram.exe": "Telegram", "discord.exe": "Discord",
+    "yandexmusic.exe": "Яндекс Музыка", "potplayermini64.exe": "PotPlayer", "mpc-hc64.exe": "MPC-HC",
+    "steam.exe": "Steam", "itunes.exe": "iTunes", "winamp.exe": "Winamp",
+}
+TITLE_TAILS = (" - Google Chrome", " — Яндекс Браузер", " - Яндекс Браузер", " - Microsoft​ Edge", " - Microsoft Edge",
+               " — Mozilla Firefox", " - Mozilla Firefox", " - Opera", " - YouTube", " - VLC media player")
+
+
+def press_media_key(key: str) -> bool:
+    vk = MEDIA_VK.get(key)
+    if vk is None or os.name != "nt":
+        return False
+    u = ctypes.windll.user32
+    u.keybd_event(vk, 0, 1, 0)        # KEYEVENTF_EXTENDEDKEY
+    u.keybd_event(vk, 0, 1 | 2, 0)    # + KEYEVENTF_KEYUP
+    return True
+
+
+def window_titles_by_exe(exe: str) -> list[str]:
+    """Заголовки видимых окон всех процессов с таким именем exe."""
+    if os.name != "nt":
+        return []
+    pids = set()
+    for pr in psutil.process_iter(["name"]):
+        if (pr.info.get("name") or "").lower() == exe:
+            pids.add(pr.pid)
+    if not pids:
+        return []
+    u = ctypes.windll.user32
+    titles: list[str] = []
+    proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def cb(hwnd, _):
+        if not u.IsWindowVisible(hwnd):
+            return True
+        pid = ctypes.c_ulong()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids:
+            n = u.GetWindowTextLengthW(hwnd)
+            if n > 0:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(hwnd, buf, n + 1)
+                titles.append(buf.value)
+        return True
+
+    u.EnumWindows(proto(cb), 0)
+    return titles
+
+
+def clean_media_title(app: str, title: str) -> str:
+    t = title.strip()
+    for tail in TITLE_TAILS:
+        if t.endswith(tail):
+            t = t[: -len(tail)].strip()
+    t = re.sub(r"^\(\d+\)\s*", "", t)          # «(3) Видео» — счётчик уведомлений во вкладке
+    if t.lower() in ("spotify", "spotify premium", "spotify free", app.lower(), ""):
+        return ""
+    return t[:70]
+
+
 # --------------------------------------------------------------------------- громкость
 class VolumeWorker(threading.Thread):
     """Отдельный поток для COM/WASAPI: команды приходят через очередь."""
@@ -294,6 +360,50 @@ class VolumeWorker(threading.Thread):
         self.available = False
         self.error = ""
         self.vol = None
+        # что звучит: {"app", "title", "playing"}; последнее звучавшее помним 15 минут
+        self.media = {"app": "", "title": "", "playing": False}
+        self._media_seen = 0.0
+        self._media_exe = ""
+
+    def _scan_media(self) -> None:
+        from pycaw.pycaw import AudioUtilities  # type: ignore
+
+        active_exe = ""
+        for sess in AudioUtilities.GetAllSessions():
+            try:
+                proc = sess.Process
+                if proc is None:
+                    continue
+                exe = proc.name().lower()
+                if exe.startswith("python") or exe in ("audiodg.exe", "svchost.exe", "pcmonitor.exe"):
+                    continue
+                if sess.State == 1:          # AudioSessionStateActive
+                    active_exe = exe
+                    if exe in MEDIA_APPS:
+                        break
+            except Exception:
+                continue
+        now = time.time()
+        if active_exe:
+            self._media_exe = active_exe
+            self._media_seen = now
+        exe = self._media_exe
+        if not exe or now - self._media_seen > 900:
+            m = {"app": "", "title": "", "playing": False}
+        else:
+            app = MEDIA_APPS.get(exe, exe[:-4] if exe.endswith(".exe") else exe)
+            title = ""
+            for t in window_titles_by_exe(exe):
+                title = clean_media_title(app, t)
+                if title:
+                    break
+            m = {"app": app[:23], "title": title, "playing": bool(active_exe)}
+        with self.lock:
+            self.media = m
+
+    def media_state(self) -> dict:
+        with self.lock:
+            return dict(self.media)
 
     def _init_com(self) -> None:
         try:
@@ -340,6 +450,7 @@ class VolumeWorker(threading.Thread):
             self.available = False
             self.error = f"pycaw: {exc}"
         last = 0.0
+        last_media = 0.0
         while True:
             cmd = None
             try:
@@ -358,6 +469,12 @@ class VolumeWorker(threading.Thread):
                     if evt:
                         evt.set()
             now = time.time()
+            if self.available and now - last_media >= 1.5:
+                last_media = now
+                try:
+                    self._scan_media()
+                except Exception:
+                    pass
             if self.available and now - last >= 0.5:
                 last = now
                 try:
@@ -438,6 +555,8 @@ class UsbLink(threading.Thread):
                 self.agent.volume.set_mute(bool(msg.get("mute")))
             elif cmd == "speedtest":
                 self.agent.start_speedtest()
+            elif cmd == "media":
+                press_media_key(str(msg.get("key", "")))
         except Exception as exc:
             self.error = f"cmd: {exc}"
 
@@ -1267,6 +1386,7 @@ class Agent:
             "muted": vol["muted"] if vol["available"] else False,
             "volumeAvailable": vol["available"],
             "volumeError": vol["error"][:40],
+            "media": self.volume.media_state(),
             "ping": self._ping,
             "top": self._top,
             "speed": speed,
@@ -1794,6 +1914,12 @@ def make_handler(agent: Agent):
                     self._json({"ok": False, "error": "bad request"}, 400)
                     return
                 self._json({"ok": True, "level": state["level"], "muted": state["muted"]})
+            elif path == "/api/media":
+                key = str(data.get("key", "")) if isinstance(data, dict) else ""
+                if press_media_key(key):
+                    self._json({"ok": True, "key": key})
+                else:
+                    self._json({"ok": False, "error": "key: prev | play | next"}, 400)
             elif path == "/api/screen/set":
                 self._json(agent.screen_set(data if isinstance(data, dict) else {}))
             elif path == "/api/app":

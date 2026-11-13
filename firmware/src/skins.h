@@ -19,6 +19,9 @@ void skinBuildIdle(lv_obj_t* scr, int baseSkin);
 // Экран прогноза погоды (открывается касанием погоды). Цвета — от скина baseSkin.
 void skinBuildForecast(lv_obj_t* scr, int baseSkin);
 
+// Медиапанель. onKey: 0/1/2 — пред./плей-пауза/след., 3/4/5 — громкость −/выкл./+, 9 — закрыть.
+void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int));
+
 // Касание в точке (x, y) попало в блок погоды текущего скина.
 bool skinWeatherHit(int x, int y);
 
