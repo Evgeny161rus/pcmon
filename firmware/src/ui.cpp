@@ -675,33 +675,38 @@ static void mediaKey(int k) {
   }
 }
 
-static void mediaGestureCb(lv_event_t*) {
+// Свайпы на главном экране: вниз — медиапанель, вверх — быстрый запуск,
+// влево — прогноз погоды, вправо — отчёт за ночь. На любой из этих страниц любой свайп — назад.
+// Скин меняется в меню (касание) или в компаньоне.
+static bool anyOverlay() { return mediaShown || launchShown || fcShown || nightShown; }
+
+static void overlayGestureCb(lv_event_t*) {
   lv_indev_t* in = lv_indev_active();
   lv_dir_t d = lv_indev_get_gesture_dir(in);
-  if (d != LV_DIR_TOP && d != LV_DIR_BOTTOM) return;
-  mediaShown = launchShown = false;
+  if (d == LV_DIR_NONE) return;
+  gestureAt = millis();
+  mediaShown = launchShown = fcShown = nightShown = false;
   pendingRebuild = true;
   lv_indev_wait_release(in);
   click();
 }
+static void mediaGestureCb(lv_event_t* e) { overlayGestureCb(e); }
 
-static void homeGestureCb(lv_event_t*) {
-  lv_indev_t* in = lv_indev_active();
-  lv_dir_t d = lv_indev_get_gesture_dir(in);
-  if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх — медиапанель, вниз — быстрый запуск
-    gestureAt = millis();
-    fcShown = nightShown = false;
-    mediaShown = d == LV_DIR_TOP;
-    launchShown = d == LV_DIR_BOTTOM;
-    pendingRebuild = true;
-    lv_indev_wait_release(in);
-    click();
+static void homeGestureCb(lv_event_t* e) {
+  if (anyOverlay()) {
+    overlayGestureCb(e);
     return;
   }
-  if (d != LV_DIR_LEFT && d != LV_DIR_RIGHT) return;
+  lv_indev_t* in = lv_indev_active();
+  lv_dir_t d = lv_indev_get_gesture_dir(in);
+  if (d == LV_DIR_NONE) return;
   gestureAt = millis();
-  nextSkin(d == LV_DIR_LEFT ? 1 : -1);
-  toastSkin = true;
+  idleShown = false;
+  mediaShown = d == LV_DIR_BOTTOM;
+  launchShown = d == LV_DIR_TOP;
+  fcShown = d == LV_DIR_LEFT;
+  nightShown = d == LV_DIR_RIGHT;
+  fcAt = millis();
   pendingRebuild = true;
   lv_indev_wait_release(in);
   click();

@@ -1669,8 +1669,11 @@ void skinBuildForecast(lv_obj_t* scr, int baseSkin) {
   settingsUnlock();
   char t[64];
   snprintf(t, sizeof(t), "Прогноз · %s", city.length() ? city.c_str() : "погода");
-  lab(scr, 12, 7, 200, t, f14b, p.fg);
-  S.fcNow = lab(scr, 180, 9, 128, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  lab(scr, 12, 7, 186, t, f14b, p.fg);
+  // «сейчас» — в две строки справа, чтобы не обрезалось рядом с длинным названием города
+  S.fcNow = lab(scr, 196, 4, 112, "", f9, p.mut, LV_TEXT_ALIGN_RIGHT);
+  lv_label_set_long_mode(S.fcNow, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_line_space(S.fcNow, -1, 0);
   box(scr, 12, 30, 296, 1, p.line);
 
   wxPal(p.acc, mix(p.fg, p.mut, 110), p.bg == 0xF4F2EE ? 0x2F6FD6 : mix(0x4CC9F0, p.acc, 210), p.bg);
@@ -1707,7 +1710,7 @@ void skinBuildForecast(lv_obj_t* scr, int baseSkin) {
 static void updForecast() {
   updWeather();
   Weather now = monitorWeather();
-  if (now.ok) setFmt(S.fcNow, "сейчас %+.0f° · %s", now.temp, weatherText(now.code));
+  if (now.ok) setFmt(S.fcNow, "сейчас %+.0f°\n%s", now.temp, weatherText(now.code));
   else setText(S.fcNow, "");
   for (int i = 0; i < S.fcN; i++) {
     Weather f;
