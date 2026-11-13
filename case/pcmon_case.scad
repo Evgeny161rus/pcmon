@@ -88,21 +88,22 @@ module shell() {
 // -------------------------------------------------------------- спинка-клин
 P_ = [W / 2, Dt];
 C_ = P_ + Lb * h_;
-module wedge2d() {
+module wedge_hull() {
   r = 5;
   hull() {
     polygon([[-W / 2, depth], [W / 2, depth], P_, [-W / 2 + r, Dt]]);
     translate([-W / 2 + r, Dt - r]) circle(r);
     translate(C_ - 2 * r * h_ - r * V_) circle(r);
   }
+}
+module wedge2d() {
+  wedge_hull();
   // полозок под нижней гранью рамки
   polygon([[W / 2, depth], P_, [W / 2 + (Dt - 1.5) * tan(tilt), 1.5], [W / 2, 1.5]]);
 }
 module cavity2d() {
-  hull() {
-    offset(delta = -2.4) polygon([[-W / 2, Dt], C_, P_]);
-    translate(10 * -V_) offset(delta = -2.4) polygon([[-W / 2, Dt], C_, P_]);
-  }
+  module c() intersection() { offset(delta = -2.4) wedge_hull(); translate([-100, Dt]) square(200); }
+  hull() { c(); translate(30 * -V_) c(); }
 }
 module xprof() { rotate([90, 0, 90]) linear_extrude(out_l, center = true) children(); }
 module back() {
@@ -126,7 +127,7 @@ module back() {
         cylinder(d = 6.2, h = depth - board_back);
     }
     // полость клина (открыта к столу)
-    xprof() translate([0, 0]) offset(0) cavity2d();
+    rotate([90, 0, 90]) linear_extrude(out_l - 4.8, center = true) cavity2d();
     // плата крепится к стойкам саморезами со стороны экрана (отверстия платы вне стекла)
     for (x = [-1, 1], y = [-1, 1]) translate([x * hole_dx / 2, y * hole_dy / 2, board_back - 1])
       cylinder(d = screw_d, h = depth - board_back);
