@@ -53,7 +53,10 @@ jobs:
           mkdir -p out
           for p in shell back stand; do openscad -o out/pcmon-case-$p.stl -D "part=\"$p\"" case/pcmon_case.scad; done
           xvfb-run -a openscad -o out/pcmon-case-preview.png --imgsize=1200,900 --viewall --autocenter --colorscheme=Tomorrow -D 'part="all"' case/pcmon_case.scad || true
+          for p in shell back stand; do xvfb-run -a openscad -o out/prev-$p.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,60,0,35,0 -D "part=\"$p\"" case/pcmon_case.scad || true; done
+          xvfb-run -a openscad -o out/prev-side.png --imgsize=500,380 --viewall --autocenter --colorscheme=Tomorrow --camera=0,0,0,90,0,90,0 -D 'part="stand"' case/pcmon_case.scad || true
           ls -la out
+          for f in out/prev-*.png; do echo "B64 $f $(base64 -w0 $f)"; done
       - uses: actions/upload-artifact@v4
         with:
           name: PCMonitor-case
