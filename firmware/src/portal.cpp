@@ -52,8 +52,6 @@ button.ghost{background:#1b2944;color:var(--acc);margin-top:10px;font-weight:600
 <input name="agent" value="%AGENT%" placeholder="например 192.168.1.5 — или пусто для автопоиска">
 <label>Порт агента</label>
 <input name="port" value="%PORT%" inputmode="numeric">
-<label>Позывной (табличка в скине «Ретро-радио»)</label>
-<input name="call" value="%CALL%" maxlength="8" autocomplete="off">
 <label>Скин</label>
 <select name="theme">%THEMES%</select>
 <button type="submit">Сохранить и перезагрузить</button>
@@ -97,14 +95,12 @@ static void handleRoot() {
   String agent = htmlEscape(gSet.agentHost);
   uint16_t port = gSet.agentPort;
   uint8_t theme = gSet.skin;
-  String call = htmlEscape(gSet.callsign);
   settingsUnlock();
 
   String page = FPSTR(PAGE);
   page.replace("%SSID%", ssid);
   page.replace("%AGENT%", agent);
   page.replace("%PORT%", String(port));
-  page.replace("%CALL%", call);
   page.replace("%THEMES%", themeOptions(theme));
   server.send(200, "text/html; charset=utf-8", page);
 }
@@ -142,13 +138,6 @@ static void handleSave() {
   int port = server.arg("port").toInt();
   if (port < 1 || port > 65535) port = 8123;
   gSet.agentPort = (uint16_t)port;
-  if (server.hasArg("call")) {
-    String call = server.arg("call");
-    call.trim();
-    call.toUpperCase();
-    if (call.length() > 8) call = call.substring(0, 8);
-    gSet.callsign = call;
-  }
   int theme = server.arg("theme").toInt();
   if (server.hasArg("theme") && theme >= 0 && theme < skinCount()) gSet.skin = (uint8_t)theme;
   settingsUnlock();
@@ -170,7 +159,7 @@ static void handleStatus() {
   String json = "{\"ok\":true,\"ip\":\"" + ip + "\",\"rssi\":" + String(WiFi.RSSI()) +
                 ",\"agent\":\"" + agent + "\",\"port\":" + String(port) +
                 ",\"skin\":" + String(gSet.skin) + ",\"skins\":" + String(skinCount()) +
-                ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"call\":\"" + gSet.callsign + "\"" +
+                ",\"flip\":" + String(gSet.flip ? 1 : 0) +
                 ",\"city\":\"" + gSet.cityName + "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\"" +
                 ",\"alert\":" + String(gSet.alertOn ? 1 : 0) + ",\"tcpu\":" + String(gSet.alertCpu) +
                 ",\"tgpu\":" + String(gSet.alertGpu) + ",\"tram\":" + String(gSet.alertRam) +
@@ -181,22 +170,12 @@ static void handleStatus() {
   server.send(200, "application/json", json);
 }
 
-// Настройки с ПК: /api/set?skin=1&flip=0&call=PCMON&menu=2&home=1
+// Настройки с ПК: /api/set?skin=1&flip=0&menu=2&home=1
 static void handleSet() {
   bool reload = false;
   if (server.hasArg("flip")) {
     settingsLock();
     gSet.flip = server.arg("flip").toInt() != 0;
-    settingsUnlock();
-    reload = true;
-  }
-  if (server.hasArg("call")) {
-    String call = server.arg("call");
-    call.trim();
-    call.toUpperCase();
-    if (call.length() > 8) call = call.substring(0, 8);
-    settingsLock();
-    gSet.callsign = call;
     settingsUnlock();
     reload = true;
   }
@@ -219,6 +198,7 @@ static void handleSet() {
                    server.hasArg("mail") ? server.arg("mail").c_str() : nullptr);
   }
   if (server.hasArg("idle")) uiForceIdle(server.arg("idle").toInt() != 0);
+  if (server.hasArg("fc")) uiShowForecast(server.arg("fc").toInt() != 0);
   if (server.hasArg("skin")) uiSetSkin(server.arg("skin").toInt());
   if (server.hasArg("menu")) uiShowMenu(server.arg("menu").toInt());
   handleStatus();

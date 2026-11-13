@@ -38,7 +38,7 @@ import psutil
 import requests
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -665,7 +665,7 @@ class Agent:
         ip = self.screen_addr()
         wifi = bool(self.screen_ip) and time.time() - self.screen_seen < 6
         out = {"ok": True, "link": "usb" if usb else ("wifi" if wifi else "none"), "port": self.usb.port,
-               "fw": h.get("fw", ""), "ip": ip, "skin": h.get("skin"), "flip": h.get("flip"), "call": h.get("call"),
+               "fw": h.get("fw", ""), "ip": ip, "skin": h.get("skin"), "flip": h.get("flip"),
                "city": h.get("city") or self.city_cfg["city"],
                "gm": h.get("gm") or self.city_cfg["gm"],
                "mail": h.get("mail") or self.city_cfg["mail"],
@@ -673,7 +673,7 @@ class Agent:
         if not usb and wifi:
             try:
                 st = requests.get(f"http://{ip}/api/status", timeout=1.5).json()
-                out.update({"skin": st.get("skin"), "flip": st.get("flip"), "call": st.get("call"),
+                out.update({"skin": st.get("skin"), "flip": st.get("flip"),
                             "city": st.get("city") or self.city_cfg["city"],
                             "gm": st.get("gm") or self.city_cfg["gm"],
                             "mail": st.get("mail") or self.city_cfg["mail"]})
@@ -687,8 +687,6 @@ class Agent:
             cmd["skin"] = int(clamp(int(data["skin"]), 0, len(SKIN_NAMES) - 1))
         if "flip" in data:
             cmd["flip"] = 1 if data["flip"] else 0
-        if "call" in data:
-            cmd["call"] = "".join(ch for ch in str(data["call"]).upper() if ch.isalnum() or ch in "/-")[:8]
         if "city" in data or "gm" in data:
             cname = str(data.get("city") or "").strip()[:36]
             gm = str(data.get("gm") or "").strip()[:64]
@@ -786,145 +784,121 @@ class Agent:
                 pass
         return None
 
-        # 1. Gismeteo (текущая погода + прогноз по 3-часовым шагам, развёрнутый по часам)
-        try:
-            r_now = requests.get(f"https://www.gismeteo.ru/{gm_slug}/now/", headers=headers, timeout=8)
-            if r_now.status_code == 200:
-                t_html = r_now.text
-                m_t = re.search(r'now-weather[^>]*>\s*<temperature-value value="(-?\d+)"', t_html)
-                m_f = re.search(r'now-feel[^>]*>.*?<temperature-value value="(-?\d+)"', t_html, re.S)
-                m_d = re.search(r'now-desc[^>]*>\s*([^<]+)', t_html)
-                m_w = re.search(r'now-info-item[^>]*>.*?Ветер.*?<speed-value value="(\d+)"', t_html, re.S)
-                if m_t:
-                    cur_t = int(m_t.group(1))
-                    cur_f = int(m_f.group(1)) if m_f else cur_t
-                    cur_w = int(m_w.group(1)) if m_w else 0
-                    cur_c = self._ru_weather_code(m_d.group(1) if m_d else "")
-                    rows.append([cur_t, cur_f, cur_w, cur_c])
+    WX_DEBUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wx_debug")
 
-            r_3d = requests.get(f"https://www.gismeteo.ru/{gm_slug}/3-days/", headers=headers, timeout=8)
-            if r_3d.status_code == 200:
-                t3 = r_3d.text
-                m_icon = re.search(r'data-row="icon-tooltip"(.*?)widget-row', t3, re.S)
-                icons = re.findall(r'data-tooltip="([^"]+)"', m_icon.group(1)) if m_icon else []
-                m_air = re.search(r'data-row="temperature-air"(.*?)data-row=', t3, re.S)
-                air = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', m_air.group(1))] if m_air else []
-                m_feel = re.search(r'data-row="temperature-heat-index"(.*?)data-row=', t3, re.S)
-                feel = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', m_feel.group(1))] if m_feel else []
-                m_wind = re.search(r'data-row="wind"(.*?)(?:data-row=|</section>)', t3, re.S)
-                wind = [int(x) for x in re.findall(r'wind-speed.*?<speed-value value="(\d+)"', m_wind.group(1), re.S)] if m_wind else []
-                n = min(len(air), len(feel), len(wind), len(icons))
-                for i in range(n):
-                    item = [air[i], feel[i], wind[i], self._ru_weather_code(icons[i])]
-                    for _ in range(3):
-                        if len(rows) < 48:
-                            rows.append(list(item))
-            if rows:
-                while len(rows) < 48:
-                    rows.append(list(rows[-1]))
-                return rows[:48]
+    def _wx_save(self, name: str, text: str) -> None:
+        """Последняя скачанная страница погоды — для разбора, если сайт поменяет вёрстку."""
+        try:
+            os.makedirs(self.WX_DEBUG_DIR, exist_ok=True)
+            with open(os.path.join(self.WX_DEBUG_DIR, name), "w", encoding="utf-8") as f:
+                f.write(text)
         except Exception:
             pass
 
-        # 2. Резерв: Pogoda.Mail.ru
-        try:
-            r_mail = requests.get(f"https://pogoda.mail.ru/prognoz/{mail_slug}/", headers=headers, timeout=8)
-            m = re.search(r"window\.__PRELOADED_STATE__PAGE\s*=\s*(\{.*?\});?\s*</script>", r_mail.text, re.S)
-            if m:
-                d = json.loads(m.group(1)).get("data", {})
-                cur = d.get("current") or {}
-                if "temperature" in cur:
-                    t0_v = int(float(str(cur.get("temperature", 0)).replace("+", "")))
-                    f0_v = int(float(str(cur.get("tempe_comf", t0_v)).replace("+", "")))
-                    w0_v = int(float(str(cur.get("wind_speed", 0))))
-                    c0_v = self._ru_weather_code(str(cur.get("description") or cur.get("descr") or ""))
-                    rows.append([t0_v, f0_v, w0_v, c0_v])
-                for h in d.get("hforecast") or []:
-                    tv = int(float(str(h.get("temperature", 0)).replace("+", "")))
-                    fv = int(float(str(h.get("tempe_comf", tv)).replace("+", "")))
-                    wv = int(float(str(h.get("wind_speed", 0))))
-                    cv = self._ru_weather_code(str(h.get("description") or h.get("descr") or ""))
-                    if len(rows) < 48:
-                        rows.append([tv, fv, wv, cv])
-                if rows:
-                    while len(rows) < 48:
-                        rows.append(list(rows[-1]))
-                    return rows[:48]
-        except Exception:
-            pass
+    @staticmethod
+    def _gm_row(html: str, row: str) -> str:
+        m = re.search(r'data-row="%s"(.*?)(?=data-row="|</section>|$)' % re.escape(row), html, re.S)
+        return m.group(1) if m else ""
 
-        return []
+    @staticmethod
+    def _gm_items(chunk: str) -> list[str]:
+        parts = re.split(r'<div[^>]*class="[^"]*row-item[^"]*"', chunk)[1:]
+        return parts
 
-    def _city_coords(self) -> tuple[float, float] | None:
-        """Координаты выбранного города (геокодер Open-Meteo), кэшируются в city.json."""
-        cfg = self.city_cfg
-        if isinstance(cfg.get("lat"), float) and isinstance(cfg.get("lon"), float):
-            return cfg["lat"], cfg["lon"]
-        if self.args.lat or self.args.lon:
-            return self.args.lat, self.args.lon
-        name = str(cfg.get("city") or "").strip()
-        if not name:
-            return None
-        r = requests.get("https://geocoding-api.open-meteo.com/v1/search",
-                         params={"name": name, "count": 10, "language": "ru", "format": "json"}, timeout=8)
-        res = [x for x in (r.json().get("results") or []) if x.get("country_code") == "RU"]
-        if not res:
-            return None
-        # одноимённых городов бывает несколько — берём самый крупный
-        best = max(res, key=lambda x: x.get("population") or 0)
-        cfg["lat"], cfg["lon"] = float(best["latitude"]), float(best["longitude"])
-        self._save_city_cfg()
-        return cfg["lat"], cfg["lon"]
+    def _parse_gismeteo(self, html: str) -> list[tuple[int, int, int, int, int]]:
+        """Столбцы страницы Gismeteo «сегодня»/«завтра» -> [(unix, темп, ощущ, ветер, код)].
+        У каждого столбца есть точное время (атрибут timestamp), по нему и привязываемся."""
+        m = re.search(r'widget-row-datetime-time(.*?)widget-row-icon', html, re.S)
+        times = [int(x) for x in re.findall(r'timestamp="(\d+)"', m.group(1))] if m else []
+        air = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', self._gm_row(html, "temperature-air"))]
+        feel = [int(x) for x in re.findall(r'<temperature-value value="(-?\d+)"', self._gm_row(html, "temperature-heat-index"))]
+        wind = [int(x) for x in re.findall(r'<speed-value value="(\d+)"', self._gm_row(html, "wind"))]
+        icons = re.findall(r'data-tooltip="([^"]+)"', self._gm_row(html, "icon-tooltip"))
+        n = min(len(times), len(air))
+        out = []
+        for i in range(n):
+            out.append((times[i], air[i], feel[i] if i < len(feel) else air[i],
+                        wind[i] if i < len(wind) else 0,
+                        self._ru_weather_code(icons[i]) if i < len(icons) else 2))
+        return out
 
-    def _fetch_openmeteo(self, lat: float, lon: float) -> tuple[int, list[list[int]]]:
-        """Почасовой прогноз на двое суток. Каждая строка привязана к своему часу
-        (время в ответе — Unix), поэтому сдвига по времени быть не может."""
-        r = requests.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": lat, "longitude": lon,
-            "hourly": "temperature_2m,apparent_temperature,wind_speed_10m,weather_code",
-            "wind_speed_unit": "ms", "forecast_days": 3, "timeformat": "unixtime", "timezone": "GMT",
-        }, timeout=10)
-        h = r.json()["hourly"]
-        now = time.time()
-        t0, rows = 0, []
-        for i, t in enumerate(h["time"]):
-            if t + 3600 <= now or len(rows) >= 48:
-                continue
-            vals = (h["temperature_2m"][i], h["apparent_temperature"][i], h["wind_speed_10m"][i], h["weather_code"][i])
-            if any(v is None for v in vals):
-                break   # дальше прогноза нет — не придумываем
-            if not rows:
-                t0 = int(t)
-            rows.append([round(vals[0]), round(vals[1]), round(vals[2]), int(vals[3])])
-        return t0, rows
+    @staticmethod
+    def _hourly(cols: list[tuple[int, int, int, int, int]], start: int, hours: int = 48) -> list[list[int]]:
+        """Из столбцов через 1–3 часа делает почасовой ряд: температура и ветер
+        интерполируются между соседними столбцами, явление — от ближайшего прошедшего."""
+        cols = sorted(cols)
+        rows = []
+        for k in range(hours):
+            t = start + k * 3600
+            if t < cols[0][0] or t > cols[-1][0]:
+                if t < cols[0][0] and cols[0][0] - t <= 3 * 3600:
+                    c = cols[0]
+                    rows.append([c[1], c[2], c[3], c[4]])
+                    continue
+                break
+            for j in range(len(cols) - 1):
+                if cols[j][0] <= t <= cols[j + 1][0]:
+                    a, b = cols[j], cols[j + 1]
+                    f = (t - a[0]) / max(1, b[0] - a[0])
+                    rows.append([round(a[1] + (b[1] - a[1]) * f), round(a[2] + (b[2] - a[2]) * f),
+                                 round(a[3] + (b[3] - a[3]) * f), a[4]])
+                    break
+            else:
+                c = cols[-1]
+                rows.append([c[1], c[2], c[3], c[4]])
+        return rows
+
+    def _fetch_gismeteo(self) -> list[list[int]]:
+        """Почасовой прогноз с Gismeteo (страницы «сегодня», «завтра», «3 дня»)."""
+        gm = self.city_cfg.get("gm") or ""
+        if not gm:
+            return []
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                   "Accept-Language": "ru-RU,ru;q=0.9"}
+        cols: dict[int, tuple] = {}
+        errors = []
+        for page, name in (("", "gm_today.html"), ("tomorrow/", "gm_tomorrow.html")):
+            try:
+                r = requests.get(f"https://www.gismeteo.ru/{gm}/{page}", headers=headers, timeout=10)
+                self._wx_save(name, r.text)
+                if r.status_code != 200:
+                    errors.append(f"{page or 'today'}: HTTP {r.status_code}")
+                    continue
+                parsed = self._parse_gismeteo(r.text)
+                if not parsed:
+                    errors.append(f"{page or 'today'}: не разобрано")
+                for c in parsed:
+                    cols[c[0]] = c
+            except Exception as exc:
+                errors.append(f"{page or 'today'}: {exc}"[:60])
+        cur = self._fetch_ru_current()
+        start = int(time.time() // 3600 * 3600)
+        if cur:
+            cols[start] = (start, *cur)
+        if errors:
+            self.forecast_error = "; ".join(errors)[:120]
+        if len(cols) < 2:
+            return [cur] if cur else []
+        return self._hourly(list(cols.values()), start)
 
     def _forecast_loop(self) -> None:
-        """Раз в полчаса берёт прогноз и отдаёт экрану: когда ПК выключен, экран
-        сам показывает погоду на текущий час.
-
-        Основной источник — Open-Meteo: почасовой ряд с точным временем каждой строки.
-        Если он недоступен, с Gismeteo / Погоды Mail.ru берётся только текущая погода,
-        одной строкой на текущий час: растягивать её на двое суток нельзя — экран
-        выдавал бы её за прогноз."""
+        """Раз в полчаса берёт почасовой прогноз с Gismeteo и отдаёт экрану:
+        когда ПК выключен, экран сам показывает погоду на текущий час.
+        Каждая строка — свой час начиная с текущего (t0), без растягивания."""
         while True:
             delay = 1800
             try:
-                rows, t0 = [], 0
-                try:
-                    coords = self._city_coords()
-                    if coords:
-                        t0, rows = self._fetch_openmeteo(*coords)
-                        self.forecast_source = "Open-Meteo"
-                except Exception as exc:
-                    self.forecast_error = f"open-meteo: {exc}"[:80]
-                if not rows:
-                    cur = self._fetch_ru_current()
-                    if cur:
-                        t0, rows = int(time.time() // 3600 * 3600), [cur]
-                        self.forecast_source = "Gismeteo/Mail.ru (только сейчас)"
-                        delay = 600
+                self.forecast_error = ""
+                rows = self._fetch_gismeteo()
+                src = "Gismeteo"
+                if len(rows) <= 1:
+                    cur = rows[0] if rows else self._fetch_ru_current()
+                    rows = [cur] if cur else []
+                    src = "Gismeteo/Mail.ru (только сейчас)"
+                    delay = 600
                 if rows:
-                    self.forecast = {"wx": 1, "t0": t0, "h": rows}
+                    self.forecast = {"wx": 1, "t0": int(time.time() // 3600 * 3600), "h": rows}
+                    self.forecast_source = src
                 else:
                     delay = 300
             except Exception as exc:
@@ -1015,10 +989,14 @@ class Agent:
             if h:
                 break
         if not h:
+            running = any("hwinfo" in (pr.info.get("name") or "").lower() for pr in psutil.process_iter(["name"]))
+            self.hwinfo_diag = ("HWiNFO запущен, но Shared Memory Support выключен" if running
+                                else "HWiNFO не запущен")
             return -1.0, -1.0
         ptr = k32.MapViewOfFile(h, 0x0004, 0, 0, 0)
         if not ptr:
             k32.CloseHandle(h)
+            self.hwinfo_diag = "общая память HWiNFO не открывается"
             return -1.0, -1.0
         cpu_primary: list[float] = []
         cpu_other: list[float] = []
@@ -1029,6 +1007,7 @@ class Agent:
             # и то же для показаний — всего 44 байта.
             hdr = ctypes.string_at(ptr, 44)
             magic, _, _, _, _, _, _, off_r, sz_r, num_r = struct.unpack("<4sIIqIIIIII", hdr)
+            self.hwinfo_diag = f"SM2 magic={magic!r} readings={num_r} size={sz_r}"
             if magic == b"HWiS" and 0 < num_r < 2000 and 64 <= sz_r <= 2048:
                 raw = ctypes.string_at(ptr + off_r, sz_r * num_r)
                 for i in range(num_r):
@@ -1048,8 +1027,8 @@ class Agent:
                         cpu_other.append(float(val))
                     if "gpu" in lbl or "гп" in lbl:
                         gpu_values.append(float(val))
-        except Exception:
-            pass
+        except Exception as e:
+            self.hwinfo_diag = f"ошибка разбора SM2: {e}"
         finally:
             k32.UnmapViewOfFile(ptr)
             k32.CloseHandle(h)
@@ -1573,7 +1552,6 @@ h2{font-size:13px;margin:0 0 12px;font-weight:600;color:var(--mut);text-transfor
 .row{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
 .row label{color:var(--text)}
 input[type=text],select{background:var(--card2);border:1px solid var(--line);border-radius:8px;color:var(--text);font:inherit;padding:8px 10px}
-#call{width:120px;text-transform:uppercase}
 #city{width:170px}
 input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
@@ -1595,7 +1573,6 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 <div class="card"><h2>Экран</h2>
 <div class="skins" id="skins"></div>
 <div class="row"><input type="checkbox" id="flip"><label for="flip">Перевернуть на 180°</label></div>
-<div class="row"><label for="call">Позывной</label><input type="text" id="call" maxlength="8" autocomplete="off"><button class="b" id="callb">Сохранить</button></div>
 <div class="row"><label for="city">Погода (город РФ)</label><input type="text" id="city" list="citylist" placeholder="Город РФ" autocomplete="off"><datalist id="citylist"></datalist><button class="b" id="cityb">Выбрать</button></div>
 <div class="note" id="scrnote"></div></div>
 <div class="card"><h2>Компьютер</h2>
@@ -1615,7 +1592,7 @@ b.innerHTML=`<span class="sw" style="background:${s[1]}"><i style="width:22px;he
 b.lastChild.textContent=s[0];b.onclick=async()=>{mark(i);show(await post('/api/screen/set',{skin:i}))};$('skins').appendChild(b)});
 function mark(i){[...$('skins').children].forEach((b,k)=>b.setAttribute('aria-pressed',k===i?'true':'false'))}
 function pct(id,v,on){$(id).textContent=on?v.toFixed(0)+'%':'—';$(id+'b').style.width=(on?v:0)+'%'}
-let callEdit=false,cityEdit=false,volDrag=false;
+let cityEdit=false,volDrag=false;
 const PRESET_CITIES=[
   ["Геленджик","Краснодарский край","weather-gelendzhik-5213","gelendzhik"],
   ["Краснодар","Краснодарский край","weather-krasnodar-5136","krasnodar"],
@@ -1653,7 +1630,7 @@ function fillCities(list){const dl=$('citylist');dl.innerHTML='';list.forEach(c=
 fillCities(PRESET_CITIES);
 function show(s){if(!s||!s.ok)return;const on=s.link!=='none';$('dot').className='dot'+(on?' on':'');
 $('link').textContent=s.link==='usb'?`Экран подключён по USB (${s.port}), прошивка ${s.fw||'?'}`:s.link==='wifi'?`Экран на связи по Wi-Fi (${s.ip})`:'Экран не найден — проверьте кабель';
-if(s.skin!=null)mark(s.skin);if(s.flip!=null)$('flip').checked=!!s.flip;if(s.call!=null&&!callEdit)$('call').value=s.call;if(s.city!=null&&!cityEdit)$('city').value=s.city;
+if(s.skin!=null)mark(s.skin);if(s.flip!=null)$('flip').checked=!!s.flip;if(s.city!=null&&!cityEdit)$('city').value=s.city;
 $('scrnote').textContent=on?'Свайп по экрану тоже меняет скин. Касание открывает меню.':'Настройки применятся, когда экран появится на связи.'}
 async function refresh(){try{const d=await j('/api/stats');
 $('host').textContent=`${d.host} · ${d.os}`;
@@ -1669,8 +1646,6 @@ $('speed').textContent=s.testing?s.stage:(s.error||(s.down?`↓ ${s.down.toFixed
 }catch(e){$('host').textContent='агент не отвечает'}}
 async function refreshScreen(){try{show(await j('/api/screen/state'))}catch(e){}}
 $('flip').onchange=async e=>show(await post('/api/screen/set',{flip:e.target.checked?1:0}));
-$('call').oninput=()=>callEdit=true;
-$('callb').onclick=async()=>{callEdit=false;show(await post('/api/screen/set',{call:$('call').value.trim().toUpperCase()}))};
 let cityTimer=null;
 $('city').oninput=e=>{cityEdit=true;const q=e.target.value.trim();clearTimeout(cityTimer);if(q.length<2){fillCities(PRESET_CITIES);return}
 cityTimer=setTimeout(async()=>{try{const r=await j('/api/weather/cities?q='+encodeURIComponent(q));if(r&&r.cities&&r.cities.length)fillCities(r.cities.map(c=>[c.city,c.region,c.gm,c.mail]))}catch(err){}},250)};
@@ -1789,7 +1764,7 @@ def make_handler(agent: Agent):
                 with agent.lock:
                     self._json({"ok": True, "speed": dict(agent.speed)})
             elif path == "/api/health":
-                self._json({"ok": True, "name": APP_NAME, "version": VERSION, "time": int(time.time()), "app": bool(AUTOSTART_CMD), "usb": agent.usb.status(), "forecastHours": len(agent.forecast.get("h", [])), "forecastSource": agent.forecast_source, "forecastError": agent.forecast_error, "cpuTemp": agent._lhm.get("cpu", -1.0)})
+                self._json({"ok": True, "name": APP_NAME, "version": VERSION, "time": int(time.time()), "app": bool(AUTOSTART_CMD), "usb": agent.usb.status(), "forecastHours": len(agent.forecast.get("h", [])), "forecastSource": agent.forecast_source, "forecastError": agent.forecast_error, "cpuTemp": agent._lhm.get("cpu", -1.0), "hwinfo": getattr(agent, "hwinfo_diag", "")})
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
 

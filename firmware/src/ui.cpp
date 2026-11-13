@@ -110,6 +110,8 @@ static bool home = true;
 static bool pendingRebuild = false;
 // Заставка: ПК молчит дольше 20 секунд (или включена принудительно для проверки).
 static bool idleShown = false, idleForce = false;
+static bool fcShown = false;      // экран прогноза погоды
+static uint32_t fcAt = 0;
 static uint32_t offlineSince = 0;
 static int nightCap = 100;
 static bool toastSkin = false;
@@ -614,6 +616,22 @@ static void goHomeCb(lv_event_t*) {
 
 static void homeClickCb(lv_event_t*) {
   if (millis() - gestureAt < 600) return;   // это был свайп, а не касание
+  // касание погоды открывает прогноз, касание прогноза — возвращает назад
+  if (fcShown) {
+    fcShown = false;
+    pendingRebuild = true;
+    click();
+    return;
+  }
+  lv_point_t pt;
+  lv_indev_get_point(lv_indev_active(), &pt);
+  if (skinWeatherHit(pt.x, pt.y)) {
+    fcShown = true;
+    fcAt = millis();
+    pendingRebuild = true;
+    click();
+    return;
+  }
   home = false;
   pendingRebuild = true;
   click();
@@ -1008,7 +1026,8 @@ static void buildAll() {
     settingsLock();
     int s = gSet.skin;
     settingsUnlock();
-    if (idleShown) skinBuildIdle(scr, s);
+    if (fcShown) skinBuildForecast(scr, s);
+    else if (idleShown) skinBuildIdle(scr, s);
     else skinBuild(scr, s);
     // прозрачный слой поверх скина: касание — меню, свайп — другой скин
     lv_obj_t* c = obj(scr, 0, 0, LCD_W, LCD_H);
@@ -1337,7 +1356,7 @@ static void refreshSettingsPage(const PcStats& pc, const WifiInfo& w) {
   s += String(ESP.getFreePsram() / 1024);
   s += "K · экран ";
   s += String(millis() / 1000);
-  s += " с · v1.4";
+  s += " с · v1.5";
   if (W.infoSet) lv_label_set_text(W.infoSet, s.c_str());
 }
 
@@ -1393,7 +1412,7 @@ static bool homeBlinkOnly() {
   settingsLock();
   int s = gSet.skin;
   settingsUnlock();
-  return home && !idleShown && s == 5;
+  return home && !idleShown && !fcShown && s == 5;
 }
 
 // ------------------------------------------------------------------ публичное
@@ -1446,7 +1465,12 @@ void uiLoop() {
   bool wantIdle = idleForce || (offlineSince && now - offlineSince > 20000UL);
   if (home && wantIdle != idleShown) {
     idleShown = wantIdle;
-    pendingRebuild = true;
+    if (!fcShown) pendingRebuild = true;
+  }
+  // прогноз сам закрывается через 30 с
+  if (fcShown && (!home || now - fcAt > 30000UL)) {
+    fcShown = false;
+    if (home) pendingRebuild = true;
   }
   // ночью (23:00–07:00) заставка светит не ярче 10 %
   if (clockTick) {
@@ -1515,6 +1539,13 @@ void uiActivity() {
   }
 }
 
+void uiShowForecast(bool on) {
+  fcShown = on;
+  fcAt = millis();
+  home = true;
+  pendingRebuild = true;
+}
+
 void uiForceIdle(bool on) {
   idleForce = on;
   home = true;
@@ -1527,33 +1558,17 @@ void uiSetSkin(int idx);
 
 // Запрос настроек из потока связи (USB): применяется в uiLoop.
 static volatile int reqSkin = -1, reqFlip = -1;
-static volatile bool reqCallSet = false;
-static char reqCall[12];
-
-void uiRequest(int skin, int flip, const char* call) {
-  if (call) {
-    strlcpy(reqCall, call, sizeof(reqCall));
-    reqCallSet = true;
-  }
+void uiRequest(int skin, int flip) {
   if (flip >= 0) reqFlip = flip ? 1 : 0;
   if (skin >= 0) reqSkin = skin;
 }
 
 static void applyRequests() {
-  if (reqFlip >= 0 || reqCallSet) {
+  if (reqFlip >= 0) {
     settingsLock();
-    if (reqFlip >= 0) gSet.flip = reqFlip != 0;
-    if (reqCallSet) {
-      String c = reqCall;
-      c.trim();
-      c.toUpperCase();
-      c.replace("\"", "");
-      c.replace("\\", "");
-      gSet.callsign = c.substring(0, 8);
-    }
+    gSet.flip = reqFlip != 0;
     settingsUnlock();
     reqFlip = -1;
-    reqCallSet = false;
     settingsSave();
     uiReloadSettings();
   }
