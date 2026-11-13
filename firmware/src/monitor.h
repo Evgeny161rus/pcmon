@@ -63,8 +63,10 @@ struct PcStats {
   char speedError[48] = "";
 
   // что сейчас звучит на ПК
-  char mediaApp[24] = "";
+  char mediaApp[40] = "";
   char mediaTitle[72] = "";
+  char mediaArtist[64] = "";
+  uint32_t mediaCover = 0;      // id обложки от ПК, 0 — нет
   bool mediaPlaying = false;
   char top1[28] = "";
   float top1cpu = 0;
@@ -113,6 +115,10 @@ struct AppTile {
 };
 int monitorApps(AppTile* out, uint32_t* ver);   // число плиток, 0 — список ещё не получен
 void monitorRequestLaunch(int i);
+
+// Обложка трека 72×72 RGB565 (nullptr — нет). id совпадает с PcStats::mediaCover, когда дошла.
+static const int COVER_PX = 72;
+const uint8_t* monitorCover(uint32_t* id);
 
 Weather monitorWeather();
 // Прогноз от ПК на час now+ahead (0 = текущий час). false — прогноза на этот час нет.

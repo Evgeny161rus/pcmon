@@ -17,6 +17,7 @@ Wi-Fi, громкость), измеряет скорость интернета
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import ipaddress
 import json
@@ -39,11 +40,12 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from launcher import ACTIONS, Launcher, item_image, pick_file, start_menu_apps, to_png_b64  # noqa: E402
+from media import MediaWatcher  # noqa: E402
 from panel import PAGE as PANEL_PAGE  # noqa: E402
 from skin_previews import PREVIEWS  # noqa: E402
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -634,7 +636,7 @@ class UsbLink(threading.Thread):
             elif cmd == "speedtest":
                 self.agent.start_speedtest()
             elif cmd == "media":
-                press_media_key(str(msg.get("key", "")))
+                self.agent.media_key(str(msg.get("key", "")))
             elif cmd == "launch":
                 ok, info = self.agent.launcher.launch(int(msg.get("i", -1)))
                 if not ok:
@@ -696,6 +698,7 @@ class UsbLink(threading.Thread):
             last_hist = 0.0
             apps_ver = None
             apps_sent = 0.0
+            cover_sent = 0.0
             try:
                 while True:
                     now = time.time()
@@ -728,6 +731,16 @@ class UsbLink(threading.Thread):
                                     s.write(raw[k:k + 1024])
                                     s.flush()
                                     time.sleep(0.03)
+                        # обложка: плата сообщает в приветствии, какая у неё (cv)
+                        cid, craw, _ = self.agent.media.cover()
+                        if now - cover_sent > 3 and int(self.hello.get("cv") or 0) != cid and "cv" in self.hello:
+                            cover_sent = now
+                            msg = {"cover": cid, "d": base64.b64encode(craw).decode()} if cid and craw else {"cover": 0}
+                            raw = (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
+                            for k in range(0, len(raw), 1024):
+                                s.write(raw[k:k + 1024])
+                                s.flush()
+                                time.sleep(0.03)
                         if now - last_hist > 300:
                             last_hist = now
                             hs = self.agent.history.summary()
@@ -768,6 +781,7 @@ class Agent:
         self.usb = UsbLink(self, args.usb_port)
         self.forecast: dict = {}   # почасовой прогноз для заставки экрана
         self.history = History(os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json"))
+        self.media = MediaWatcher()
         self.launcher = Launcher(os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps.json"))
         self.forecast_source = ""
         self.forecast_error = ""
@@ -1508,7 +1522,7 @@ class Agent:
             "muted": vol["muted"] if vol["available"] else False,
             "volumeAvailable": vol["available"],
             "volumeError": vol["error"][:40],
-            "media": self.volume.media_state(),
+            "media": self.media_state(),
             "ping": self._ping,
             "top": self._top,
             "speed": speed,
@@ -1751,10 +1765,23 @@ class Agent:
                 except OSError:
                     pass
 
+    def media_state(self) -> dict:
+        """Что играет: из системной медиапанели Windows, иначе — по звучащей программе."""
+        if self.media.available:
+            m = self.media.snapshot()
+            if m["app"]:
+                return m
+        m = self.volume.media_state()
+        return {"app": m["app"], "title": m["title"], "artist": "", "playing": m["playing"], "cover": 0}
+
+    def media_key(self, key: str) -> bool:
+        return self.media.command(key) or press_media_key(key)
+
     def start(self) -> None:
         self._refresh_partitions()
         self.data = self._sample()
         self.volume.start()
+        self.media.start()
         threading.Thread(target=self._forecast_loop, daemon=True, name="forecast").start()
         if not self.args.no_usb:
             self.usb.start()
@@ -1889,6 +1916,9 @@ def make_handler(agent: Agent):
                 self._json(data)
             elif path == "/api/volume":
                 self._json({"ok": True, **agent.volume.state()})
+            elif path == "/api/media/cover":
+                cid, _, png = agent.media.cover()
+                self._json({"ok": True, "id": cid, "img": png, "src": "winrt" if agent.media.available else "", "error": agent.media.error})
             elif path == "/api/history":
                 self._json(agent.history.summary())
             elif path == "/api/apps":
@@ -1962,7 +1992,7 @@ def make_handler(agent: Agent):
                 self._json({"ok": ok, "info": info}, 200 if ok else 400)
             elif path == "/api/media":
                 key = str(data.get("key", "")) if isinstance(data, dict) else ""
-                if press_media_key(key):
+                if agent.media_key(key):
                     self._json({"ok": True, "key": key})
                 else:
                     self._json({"ok": False, "error": "key: prev | play | next"}, 400)

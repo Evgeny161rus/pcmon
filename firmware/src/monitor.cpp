@@ -233,6 +233,8 @@ static void parseStats(JsonDocument& doc, float linkMs, bool viaUsb) {
   if (!md.isNull()) {
     copyStr(n.mediaApp, sizeof(n.mediaApp), md["app"] | "");
     copyStr(n.mediaTitle, sizeof(n.mediaTitle), md["title"] | "");
+    copyStr(n.mediaArtist, sizeof(n.mediaArtist), md["artist"] | "");
+    n.mediaCover = md["cover"] | 0UL;
     n.mediaPlaying = md["playing"] | false;
   }
   n.pingMs = doc["ping"] | 0.0f;
@@ -471,6 +473,42 @@ static uint32_t appMask() {
   return m;
 }
 
+// ------------------------------------------------------------------ обложка
+static uint8_t* coverBuf = nullptr;
+static uint32_t coverId = 0;
+
+static void handleCover(JsonDocument& doc) {
+  uint32_t id = doc["cover"] | 0UL;
+  const size_t BYTES = COVER_PX * COVER_PX * 2;
+  if (!id) {
+    xSemaphoreTake(statsMux, portMAX_DELAY);
+    coverId = 0;
+    xSemaphoreGive(statsMux);
+    return;
+  }
+  const char* b64 = doc["d"] | "";
+  static uint8_t* tmp = nullptr;
+  if (!tmp) tmp = (uint8_t*)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
+  if (!coverBuf) coverBuf = (uint8_t*)heap_caps_malloc(BYTES, MALLOC_CAP_SPIRAM);
+  if (!tmp || !coverBuf) return;
+  size_t out = 0;
+  if (mbedtls_base64_decode(tmp, BYTES, &out, (const unsigned char*)b64, strlen(b64)) != 0 || out != BYTES) return;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  memcpy(coverBuf, tmp, BYTES);
+  coverId = id;
+  st.rev++;
+  xSemaphoreGive(statsMux);
+}
+
+const uint8_t* monitorCover(uint32_t* id) {
+  if (!statsMux) return nullptr;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  uint32_t i = coverId;
+  xSemaphoreGive(statsMux);
+  if (id) *id = i;
+  return i ? coverBuf : nullptr;
+}
+
 int monitorApps(AppTile* out, uint32_t* rev) {
   if (!statsMux) return 0;
   xSemaphoreTake(statsMux, portMAX_DELAY);
@@ -515,6 +553,10 @@ static void handleUsbLine(char* line, size_t len) {
   }
   if (!doc["icon"].isNull()) {
     handleIcon(doc);
+    return;
+  }
+  if (!doc["cover"].isNull()) {
+    handleCover(doc);
     return;
   }
   if (!(doc["ok"] | false)) return;
@@ -850,9 +892,9 @@ static void netTask(void*) {
     if (now >= nextHello) {
       nextHello = now + 5000;
       settingsLock();
-      String hello = "{\"hello\":1,\"fw\":\"1.6.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
+      String hello = "{\"hello\":1,\"fw\":\"1.7.0\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"skin\":" + String(gSet.skin) +
                      ",\"flip\":" + String(gSet.flip ? 1 : 0) + ",\"city\":\"" + gSet.cityName +
-                     "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + ",\"av\":" + String(appVer) + ",\"im\":" + String(appMask()) + "}";
+                     "\",\"gm\":\"" + gSet.cityGm + "\",\"mail\":\"" + gSet.cityMail + "\",\"rx\":" + String(usbFrames) + ",\"av\":" + String(appVer) + ",\"im\":" + String(appMask()) + ",\"cv\":" + String(coverId) + "}";
       settingsUnlock();
       usbSend(hello);
     }

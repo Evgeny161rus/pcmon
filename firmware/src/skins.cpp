@@ -111,7 +111,8 @@ struct State {
   lv_chart_series_t* fcSer;
   lv_obj_t *fcMin, *fcMax, *fcNow;
   // медиапанель
-  lv_obj_t *mApp, *mTitle, *mPlayIcon, *mPlayBtn, *mVolLbl, *mMuteIcon;
+  lv_obj_t *mApp, *mTitle, *mArtist, *mCover, *mCoverPh, *mPlayIcon, *mPlayBtn, *mVolLbl, *mMuteIcon;
+  uint32_t mCoverId = 0xFFFFFFFF;
   Bar mVol;
   void (*mKey)(int) = nullptr;
   uint32_t mAcc = 0, mFg = 0;
@@ -1780,12 +1781,26 @@ void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(scr, C(p.bg), 0);
 
-  lab(scr, 14, 10, 200, "Сейчас играет", f9, p.mut);
   mediaBtn(scr, 272, 4, 40, 30, card, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
-  S.mApp = lab(scr, 14, 28, 250, "", f14b, p.acc);
-  S.mTitle = lab(scr, 14, 50, 292, "", f20b, p.fg);
+  // обложка 72×72 (или заглушка с нотой), справа — программа, трек, исполнитель
+  S.mCoverPh = box(scr, 14, 10, COVER_PX, COVER_PX, card, 12, p.line, 1);
+  lv_obj_t* note = lv_label_create(S.mCoverPh);
+  lv_label_set_text(note, LV_SYMBOL_AUDIO);
+  lv_obj_set_style_text_font(note, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(note, C(p.mut), 0);
+  lv_obj_center(note);
+  S.mCover = lv_image_create(scr);
+  lv_obj_set_pos(S.mCover, 14, 10);
+  lv_obj_set_style_radius(S.mCover, 12, 0);
+  lv_obj_set_style_clip_corner(S.mCover, true, 0);
+  lv_obj_add_flag(S.mCover, LV_OBJ_FLAG_HIDDEN);
+  S.mApp = lab(scr, 98, 10, 168, "", f9b, p.acc);
+  S.mTitle = lab(scr, 98, 34, 214, "", f14b, p.fg);
   lv_label_set_long_mode(S.mTitle, LV_LABEL_LONG_DOT);
-  lv_obj_set_height(S.mTitle, 52);
+  lv_obj_set_height(S.mTitle, 40);
+  S.mArtist = lab(scr, 98, 72, 214, "", f9, p.mut);
+  lv_label_set_long_mode(S.mArtist, LV_LABEL_LONG_DOT);
+  lv_obj_set_height(S.mArtist, 16);
 
   mediaBtn(scr, 40, 118, 64, 64, card, p.line, 0, LV_SYMBOL_PREV, &lv_font_montserrat_20, p.fg);
   S.mPlayIcon = mediaBtn(scr, 120, 110, 80, 80, p.acc, 0, 1, LV_SYMBOL_PLAY, &lv_font_montserrat_28, p.bg);
@@ -1802,16 +1817,43 @@ void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
   mediaBtn(scr, 272, 200, 36, 32, card, p.line, 5, LV_SYMBOL_PLUS, &lv_font_montserrat_16, p.fg);
 }
 
+static lv_image_dsc_t coverDsc;
+
 static void updMedia(const PcStats& pc) {
   if (!pc.online) {
     setText(S.mApp, "ПК не на связи");
     setText(S.mTitle, "");
+    setText(S.mArtist, "");
   } else if (pc.mediaApp[0]) {
     setText(S.mApp, pc.mediaApp);
     setText(S.mTitle, pc.mediaTitle[0] ? pc.mediaTitle : (pc.mediaPlaying ? "звучит" : "на паузе"));
+    setText(S.mArtist, pc.mediaArtist);
   } else {
     setText(S.mApp, "Тишина");
     setText(S.mTitle, "Нажмите «плей», чтобы продолжить");
+    setText(S.mArtist, "");
+  }
+  uint32_t cid = 0;
+  const uint8_t* cv = monitorCover(&cid);
+  bool show = cv && pc.online && pc.mediaApp[0] && cid == pc.mediaCover;
+  uint32_t want = show ? cid : 0;
+  if (want != S.mCoverId) {
+    S.mCoverId = want;
+    if (show) {
+      memset(&coverDsc, 0, sizeof(coverDsc));
+      coverDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+      coverDsc.header.cf = LV_COLOR_FORMAT_RGB565;
+      coverDsc.header.w = COVER_PX;
+      coverDsc.header.h = COVER_PX;
+      coverDsc.header.stride = COVER_PX * 2;
+      coverDsc.data_size = COVER_PX * COVER_PX * 2;
+      coverDsc.data = cv;
+      lv_image_set_src(S.mCover, &coverDsc);
+      lv_obj_invalidate(S.mCover);
+      lv_obj_remove_flag(S.mCover, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(S.mCover, LV_OBJ_FLAG_HIDDEN);
+    }
   }
   setText(S.mPlayIcon, pc.mediaPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
   if (pc.online) {

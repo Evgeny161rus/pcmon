@@ -15,7 +15,7 @@ if errorlevel 1 goto :err
 rem One-file EXE; Python is not required on the target PC.
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name PCMonitor ^
   --collect-all pycaw --collect-all comtypes --collect-all pystray ^
-  --collect-all webview --collect-all clr_loader --collect-all pythonnet --hidden-import clr ^
+  --collect-all webview --collect-all clr_loader --collect-all pythonnet --hidden-import clr --collect-all winrt ^
   --icon "%~dp0agent\pcmon.ico" --hidden-import pystray._win32 agent\pcmon_app.pyw
 if errorlevel 1 goto :err
 
@@ -23,7 +23,7 @@ rem Folder build can be preferable when antivirus flags a one-file executable.
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --windowed --noupx --name PCMonitor ^
   --distpath dist-onedir --workpath build-onedir --specpath build-onedir ^
   --collect-all pycaw --collect-all comtypes --collect-all pystray ^
-  --collect-all webview --collect-all clr_loader --collect-all pythonnet --hidden-import clr ^
+  --collect-all webview --collect-all clr_loader --collect-all pythonnet --hidden-import clr --collect-all winrt ^
   --icon "%~dp0agent\pcmon.ico" --hidden-import pystray._win32 agent\pcmon_app.pyw
 if errorlevel 1 goto :err
 

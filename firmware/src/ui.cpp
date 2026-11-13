@@ -1418,7 +1418,7 @@ static void refreshSettingsPage(const PcStats& pc, const WifiInfo& w) {
   s += String(ESP.getFreePsram() / 1024);
   s += "K · экран ";
   s += String(millis() / 1000);
-  s += " с · v1.6";
+  s += " с · v1.7";
   if (W.infoSet) lv_label_set_text(W.infoSet, s.c_str());
 }
 

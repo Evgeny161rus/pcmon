@@ -78,7 +78,7 @@ dialog::backdrop{background:#0009}
 <div class="card"><div class="k">Память</div><div class="v" id="ram">—</div><div class="s" id="rams"></div><div class="bar"><i id="ramb"></i></div></div>
 <div class="card"><div class="k">Диск</div><div class="v" id="disk">—</div><div class="s" id="disks"></div><div class="bar"><i id="diskb"></i></div></div>
 <div class="card"><div class="k">Сеть</div><div class="v" id="net">—</div><div class="s" id="nets"></div></div>
-<div class="card"><div class="k">Сейчас играет</div><div class="v" id="med" style="font-size:18px">—</div><div class="s" id="meds"></div></div>
+<div class="card" style="grid-column:span 2;display:flex;gap:14px;align-items:center"><img id="cov" alt="" style="width:72px;height:72px;border-radius:10px;object-fit:cover;background:var(--card2);flex:none"><div style="min-width:0"><div class="k" id="mapp">Сейчас играет</div><div class="v" id="med" style="font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div><div class="s" id="meds"></div></div></div>
 </div>
 <h2>Экран</h2><div class="card"><div id="scrinfo" class="s">—</div></div>
 </section>
@@ -135,7 +135,7 @@ document.querySelectorAll('nav button[data-p]').forEach(b=>b.onclick=()=>{
 
 // ---- обзор
 function pct(id,v,on){$(id).textContent=on?v.toFixed(0)+'%':'—';const b=$(id+'b');if(b)b.style.width=(on?v:0)+'%'}
-let volDrag=false;
+let volDrag=false,lastCover=-1;
 async function refresh(){try{const d=await j('/api/stats');
 $('host').textContent=`${d.host} · ${d.os}`;
 pct('cpu',d.cpu.load,true);$('cpus').textContent=(d.cpu.temp>0?d.cpu.temp.toFixed(0)+'°C · ':'')+d.cpu.freq.toFixed(1)+' ГГц';
@@ -143,7 +143,8 @@ pct('gpu',d.gpu.load,d.gpu.present);$('gpus').textContent=d.gpu.present?`${d.gpu
 pct('ram',d.ram.percent,true);$('rams').textContent=`${d.ram.used.toFixed(1)} из ${d.ram.total.toFixed(0)} ГБ`;
 pct('disk',d.disk.percent,true);$('disks').textContent=`${d.disk.used.toFixed(0)} из ${d.disk.total.toFixed(0)} ГБ`;
 $('net').textContent=`↓ ${d.net.down.toFixed(1)}`;$('nets').textContent=`↑ ${d.net.up.toFixed(1)} Мбит/с · пинг ${d.ping||'—'} мс`;
-const m=d.media||{};$('med').textContent=m.app||'тишина';$('meds').textContent=m.title||(m.app?(m.playing?'звучит':'на паузе'):'');
+const m=d.media||{};$('mapp').textContent=m.app?`${m.app} · ${m.playing?'играет':'пауза'}`:'Сейчас играет';$('med').textContent=m.title||(m.app?'':'тишина');$('meds').textContent=m.artist||'';
+if((m.cover||0)!==lastCover){lastCover=m.cover||0;if(lastCover)j('/api/media/cover').then(c=>{$('cov').src=c.img||''}).catch(()=>{});else $('cov').removeAttribute('src')}
 if(!volDrag){$('vol').value=d.volumeLevel;$('volv').textContent=d.volumeAvailable?d.volumeLevel+'%':'—'}
 $('mute').textContent=d.muted?'Включить звук':'Выключить звук';
 const s=d.speed;$('spb').style.width=(s.testing?s.progress*100:0)+'%';
