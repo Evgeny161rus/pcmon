@@ -1237,14 +1237,20 @@ static void busTrace(lv_obj_t* scr, int i, int x0, int y0, int x1, int y1, int x
   lv_anim_start(&a);
 }
 
-static lv_obj_t* busCard(lv_obj_t* scr, int i, int x, int y, const char* title, const char* bus, uint32_t col) {
+// Модуль на плате. Цветная полоска — на внешнем краю, со стороны дорожки её нет,
+// поэтому правые модули — зеркальное отражение левых.
+static lv_obj_t* busCard(lv_obj_t* scr, int i, int x, int y, const char* title, const char* bus, uint32_t col,
+                         bool right) {
   lv_obj_t* c = box(scr, x, y, 96, 62, 0x0E1A25, 8, 0x1E3A4C, 1);
-  box(c, 0, 8, 3, 46, col, 1);
-  lab(c, 10, 5, 50, title, f9b, 0xA9BCCB);
-  lab(c, 46, 6, 44, bus, f8, 0x5F7689, LV_TEXT_ALIGN_RIGHT);
-  S.rowVal[i] = lab(c, 10, 18, 82, "—", f20b, col);
-  S.rowSub[i] = lab(c, 10, 42, 82, "", f8, 0x8295A8);
-  S.cellBar[i] = bar(c, 10, 55, 78, 3, 0x1E3A4C, col);
+  lv_text_align_t al = right ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT;
+  lv_text_align_t alb = right ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_RIGHT;
+  int tx = right ? 4 : 10;   // текстовая колонка: 10..90 слева, 4..84 справа
+  box(c, right ? 91 : 0, 8, 3, 46, col, 1);
+  lab(c, right ? 34 : 10, 5, 50, title, f9b, 0xA9BCCB, al);
+  lab(c, right ? 4 : 40, 6, 44, bus, f8, 0x5F7689, alb);
+  S.rowVal[i] = lab(c, tx, 18, 80, "—", f20b, col, al);
+  S.rowSub[i] = lab(c, tx, 42, 80, "", f8, 0x8295A8, al);
+  S.cellBar[i] = bar(c, tx + 2, 55, 76, 3, 0x1E3A4C, col);
   return c;
 }
 
@@ -1283,10 +1289,10 @@ static void buildOrbit(lv_obj_t* scr) {
   S.bigSub = lab(core, 0, 55, cw - 4, "", f8, MUT, LV_TEXT_ALIGN_CENTER);
 
   // модули и дорожки
-  busCard(scr, 0, 8, 34, "GPU", "PCIe", COL[0]);
-  busCard(scr, 1, 216, 34, "ОЗУ", "DDR", COL[1]);
-  busCard(scr, 2, 8, 172, "ДИСК", "NVMe", COL[2]);
-  busCard(scr, 3, 216, 172, "СЕТЬ", "LAN", COL[3]);
+  busCard(scr, 0, 8, 34, "GPU", "PCIe", COL[0], false);
+  busCard(scr, 1, 216, 34, "ОЗУ", "DDR", COL[1], true);
+  busCard(scr, 2, 8, 172, "ДИСК", "NVMe", COL[2], false);
+  busCard(scr, 3, 216, 172, "СЕТЬ", "LAN", COL[3], true);
   busTrace(scr, 0, 104, 64, 136, 64, 136, cy0 - 5, COL[0], false);
   busTrace(scr, 1, 216, 64, 184, 64, 184, cy0 - 5, COL[1], false);
   busTrace(scr, 2, 104, 204, 136, 204, 136, cy0 + ch + 5, COL[2], false);
