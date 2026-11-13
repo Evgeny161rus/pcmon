@@ -1614,6 +1614,18 @@ void uiShowNight(bool on) {
   pendingRebuild = true;
 }
 
+void uiShowScreen(const char* n) {
+  if (!strcmp(n, "fc")) uiShowForecast(true);
+  else if (!strcmp(n, "media")) uiShowMedia(true);
+  else if (!strcmp(n, "night")) uiShowNight(true);
+  else if (!strcmp(n, "launch")) uiShowLaunch(true);
+  else if (!strcmp(n, "idle")) uiForceIdle(true);
+  else if (!strcmp(n, "home")) {
+    fcShown = nightShown = mediaShown = launchShown = false;
+    uiForceIdle(false);
+  }
+}
+
 void uiShowLaunch(bool on) {
   launchShown = on;
   fcShown = nightShown = mediaShown = false;

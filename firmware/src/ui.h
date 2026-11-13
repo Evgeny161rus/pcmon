@@ -23,6 +23,8 @@ void uiShowForecast(bool on);   // открыть/закрыть экран пр
 void uiShowMedia(bool on);      // открыть/закрыть медиапанель
 void uiShowNight(bool on);      // открыть/закрыть отчёт за 12 часов
 void uiShowLaunch(bool on);     // открыть/закрыть быстрый запуск
+// Показать экран по имени: fc, media, night, launch, idle, home.
+void uiShowScreen(const char* name);
 void uiShowMenu(int page);
 void uiReloadSettings();
 void uiRequest(int skin, int flip);   // из любого потока

@@ -489,6 +489,8 @@ static void handleUsbLine(char* line, size_t len) {
       monitorSetCity(s["city"] | (const char*)nullptr, s["gm"] | (const char*)nullptr, s["mail"] | (const char*)nullptr);
     }
     uiRequest(s["skin"] | -1, s["flip"] | -1);
+    const char* sh = s["show"] | "";
+    if (sh[0]) uiShowScreen(sh);
     return;
   }
   if (doc["wx"] | 0) {      // почасовой прогноз от компаньона
