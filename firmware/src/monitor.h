@@ -103,6 +103,17 @@ struct History {
 };
 bool monitorHistory(History& out);
 
+// Быстрый запуск: плитки от ПК (4–6), иконки 48×48 в формате LVGL RGB565A8.
+static const int APP_MAX = 6;
+static const int APP_ICON = 48;
+struct AppTile {
+  char name[40] = "";             // до 18 букв (UTF-8)
+  bool confirm = false;          // действие с подтверждением (выключение, перезагрузка)
+  const uint8_t* icon = nullptr;  // nullptr — иконка ещё не пришла
+};
+int monitorApps(AppTile* out, uint32_t* ver);   // число плиток, 0 — список ещё не получен
+void monitorRequestLaunch(int i);
+
 Weather monitorWeather();
 // Прогноз от ПК на час now+ahead (0 = текущий час). false — прогноза на этот час нет.
 bool monitorForecast(int ahead, Weather& out);

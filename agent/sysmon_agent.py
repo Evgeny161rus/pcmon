@@ -37,6 +37,9 @@ from urllib.parse import parse_qs, urlparse
 import psutil
 import requests
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from launcher import ACTIONS, Launcher, item_image, pick_file, start_menu_apps, to_png_b64  # noqa: E402
+
 APP_NAME = "PC Monitor Agent"
 VERSION = "1.6.0"
 UDP_MAGIC = b"PCMON?"
@@ -68,7 +71,7 @@ DEFAULT_PING_URL = "https://speed.cloudflare.com/__down?bytes=0"
 
 
 SKIN_NAMES = ["Приборы", "Неон", "Минимализм", "Ретро-радио", "Часы", "Терминал", "Плитки", "Лампы",
-              "Импульс", "Шина", "HUD", "Сканлайн"]
+              "Импульс", "Шина", "HUD", "Сканлайн", "Звук"]
 
 # Команда автозапуска задаётся программой-оболочкой (pcmon_app.pyw); без неё автозапуск недоступен.
 AUTOSTART_CMD = ""
@@ -629,6 +632,10 @@ class UsbLink(threading.Thread):
                 self.agent.start_speedtest()
             elif cmd == "media":
                 press_media_key(str(msg.get("key", "")))
+            elif cmd == "launch":
+                ok, info = self.agent.launcher.launch(int(msg.get("i", -1)))
+                if not ok:
+                    self.error = f"launch: {info}"
         except Exception as exc:
             self.error = f"cmd: {exc}"
 
@@ -684,6 +691,7 @@ class UsbLink(threading.Thread):
             last = 0.0
             last_wx, last_wx_t0 = 0.0, None
             last_hist = 0.0
+            apps_ver = None
             try:
                 while True:
                     now = time.time()
@@ -695,6 +703,10 @@ class UsbLink(threading.Thread):
                         line = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
                         s.write(line.encode("utf-8"))
                         self.sent += 1
+                        if apps_ver != self.agent.launcher.ver:
+                            apps_ver = self.agent.launcher.ver
+                            for m in self.agent.launcher.board_messages():
+                                s.write((json.dumps(m, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
                         if now - last_hist > 300:
                             last_hist = now
                             hs = self.agent.history.summary()
@@ -735,6 +747,7 @@ class Agent:
         self.usb = UsbLink(self, args.usb_port)
         self.forecast: dict = {}   # почасовой прогноз для заставки экрана
         self.history = History(os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.json"))
+        self.launcher = Launcher(os.path.join(os.path.dirname(os.path.abspath(__file__)), "apps.json"))
         self.forecast_source = ""
         self.forecast_error = ""
         self._wx_wake = threading.Event()
@@ -1799,7 +1812,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 </div></div>
 <script>
 const $=id=>document.getElementById(id);
-const SK=[["Приборы","#0c0e11","#ff9f1c","#4cc9f0"],["Неон","#07060d","#22e3ff","#ff4df5"],["Минимализм","#f4f2ee","#16161a","#c2410c"],["Ретро-радио","#1c1a17","#f3e6c4","#5ef2d6"],["Часы","#000000","#ffa51e","#ff3b6b"],["Терминал","#020a04","#35e85a","#28c048"],["Плитки","#0b0c10","#1f64f2","#763af5"],["Лампы","#0e0905","#ff8a2b","#e6d7c3"],["Импульс","#07111d","#24d8ff","#8b6cff"],["Шина","#081018","#38bfd5","#45e0b2"],["HUD","#0b0d12","#ff4e9b","#27d9f2"],["Сканлайн","#080d12","#42d8ff","#ff4e9b"]];
+const SK=[["Приборы","#0c0e11","#ff9f1c","#4cc9f0"],["Неон","#07060d","#22e3ff","#ff4df5"],["Минимализм","#f4f2ee","#16161a","#c2410c"],["Ретро-радио","#1c1a17","#f3e6c4","#5ef2d6"],["Часы","#000000","#ffa51e","#ff3b6b"],["Терминал","#020a04","#35e85a","#28c048"],["Плитки","#0b0c10","#1f64f2","#763af5"],["Лампы","#0e0905","#ff8a2b","#e6d7c3"],["Импульс","#07111d","#24d8ff","#8b6cff"],["Шина","#081018","#38bfd5","#45e0b2"],["HUD","#0b0d12","#ff4e9b","#27d9f2"],["Сканлайн","#080d12","#42d8ff","#ff4e9b"],["Звук","#06070c","#22e3ff","#ff4df5"]];
 async function j(u,o){const r=await fetch(u,o);return r.json()}
 function post(u,b){return j(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
 SK.forEach((s,i)=>{const b=document.createElement('button');b.className='skin';b.type='button';b.setAttribute('aria-pressed','false');
@@ -1898,6 +1911,9 @@ def make_handler(agent: Agent):
             if self.command != "HEAD":
                 self.wfile.write(body)
 
+        def _local(self) -> bool:
+            return self.client_address[0] in ("127.0.0.1", "::1")
+
         def _json(self, obj, code: int = 200) -> None:
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
@@ -1977,6 +1993,22 @@ def make_handler(agent: Agent):
                 self._json({"ok": True, **agent.volume.state()})
             elif path == "/api/history":
                 self._json(agent.history.summary())
+            elif path == "/api/apps":
+                cfg = agent.launcher.config()
+                icons = []
+                for i in range(6):
+                    try:
+                        icons.append(agent.launcher.icon(i)[1])
+                    except Exception:
+                        icons.append("")
+                cfg["icons"] = icons
+                cfg["actions"] = {k: v[0] for k, v in ACTIONS.items()}
+                self._json({"ok": True, **cfg})
+            elif path == "/api/apps/start":
+                if not self._local():
+                    self._json({"ok": False, "error": "только с этого ПК"}, 403)
+                    return
+                self._json({"ok": True, "apps": start_menu_apps()})
             elif path == "/api/speedtest":
                 with agent.lock:
                     self._json({"ok": True, "speed": dict(agent.speed)})
@@ -2011,6 +2043,25 @@ def make_handler(agent: Agent):
                     self._json({"ok": False, "error": "bad request"}, 400)
                     return
                 self._json({"ok": True, "level": state["level"], "muted": state["muted"]})
+            elif path in ("/api/apps", "/api/apps/pick", "/api/apps/preview") and not self._local():
+                self._json({"ok": False, "error": "только с этого ПК"}, 403)
+            elif path == "/api/apps":
+                cfg = agent.launcher.set_config(data if isinstance(data, dict) else {})
+                self._json({"ok": True, **cfg})
+            elif path == "/api/apps/pick":
+                self._json({"ok": True, "path": pick_file()})
+            elif path == "/api/apps/preview":
+                it = data if isinstance(data, dict) else {}
+                try:
+                    self._json({"ok": True, "icon": to_png_b64(item_image(it))})
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)[:80]})
+            elif path == "/api/launch":
+                if not (self._local() or self.client_address[0] == agent.screen_ip):
+                    self._json({"ok": False, "error": "запуск — только с экрана или этого ПК"}, 403)
+                    return
+                ok, info = agent.launcher.launch(int(data.get("i", -1)) if isinstance(data, dict) else -1)
+                self._json({"ok": ok, "info": info}, 200 if ok else 400)
             elif path == "/api/media":
                 key = str(data.get("key", "")) if isinstance(data, dict) else ""
                 if press_media_key(key):

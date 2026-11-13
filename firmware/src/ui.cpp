@@ -33,7 +33,7 @@ struct Theme {
 };
 
 // Палитра меню берётся от текущего скина: скин задаёт вид всего интерфейса.
-static const Theme THEMES[12] = {
+static const Theme THEMES[13] = {
     {"Приборы", 0x0C0E11, 0x14181D, 0x171A1F, 0x20252B, 0x3A3F47, 0xFFFFFF, 0xAAB1BC,
      0xFF9F1C, 0x4CC9F0, 0x46E06A, 0xFFC53D, 0xE5484D, 0x1B2026, 0x14100A, false},
     {"Неон", 0x07060D, 0x120F24, 0x0F0D1C, 0x1B1830, 0x2E2850, 0xFFFFFF, 0xB9B3E0,
@@ -57,7 +57,8 @@ static const Theme THEMES[12] = {
     {"HUD", 0x0B0D12, 0x11151D, 0x121720, 0x1A202B, 0x27303D, 0xF4F7FC, 0x8995A7,
      0x42E6B5, 0x24D8FF, 0x42E6B5, 0xFFB454, 0xFF4E9B, 0x151C26, 0x0B0D12, false},
     {"Сканлайн", 0x080D12, 0x0E161D, 0x111A22, 0x17232C, 0x1D3440, 0xE9F6FF, 0x8297A5,
-     0x42D8FF, 0xFF4E9B, 0x42E6B5, 0xFFB454, 0xFF5577, 0x10212A, 0x080D12, false},
+     0x42D8FF, 0xFF4E9B, 0x42E6B5, 0xFFB454, 0xFF5577, 0x10212A, 0x080D12, false},    {"Звук", 0x06070C, 0x0C0E18, 0x0F1220, 0x161A2C, 0x262B42, 0xF2F4FF, 0x8C92B0,
+     0x22E3FF, 0xFF4DF5, 0x42E6B5, 0xFFB454, 0xFF4E6D, 0x10131F, 0x06070C, false},
 };
 
 static Theme TH;
@@ -113,6 +114,7 @@ static bool idleShown = false, idleForce = false;
 static bool fcShown = false;      // экран прогноза погоды
 static bool mediaShown = false;   // медиапанель
 static bool nightShown = false;   // отчёт за 12 часов
+static bool launchShown = false;  // быстрый запуск
 static uint32_t fcAt = 0;
 static uint32_t offlineSince = 0;
 static int nightCap = 100;
@@ -665,8 +667,10 @@ static void mediaKey(int k) {
   } else if (k == 4) {
     monitorRequestMute(!monitorSnapshot().muted);
   } else if (k == 9) {
-    mediaShown = false;
+    mediaShown = launchShown = false;
     pendingRebuild = true;
+  } else if (k >= 100 && k < 100 + APP_MAX) {
+    monitorRequestLaunch(k - 100);
   }
 }
 
@@ -674,7 +678,7 @@ static void mediaGestureCb(lv_event_t*) {
   lv_indev_t* in = lv_indev_active();
   lv_dir_t d = lv_indev_get_gesture_dir(in);
   if (d != LV_DIR_TOP && d != LV_DIR_BOTTOM) return;
-  mediaShown = false;
+  mediaShown = launchShown = false;
   pendingRebuild = true;
   lv_indev_wait_release(in);
   click();
@@ -683,10 +687,11 @@ static void mediaGestureCb(lv_event_t*) {
 static void homeGestureCb(lv_event_t*) {
   lv_indev_t* in = lv_indev_active();
   lv_dir_t d = lv_indev_get_gesture_dir(in);
-  if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх/вниз — медиапанель
+  if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх — медиапанель, вниз — быстрый запуск
     gestureAt = millis();
     fcShown = nightShown = false;
-    mediaShown = true;
+    mediaShown = d == LV_DIR_TOP;
+    launchShown = d == LV_DIR_BOTTOM;
     pendingRebuild = true;
     lv_indev_wait_release(in);
     click();
@@ -1070,6 +1075,12 @@ static void buildAll() {
     settingsLock();
     int s = gSet.skin;
     settingsUnlock();
+    if (launchShown) {
+      skinBuildLaunch(scr, s, mediaKey);
+      lv_obj_add_event_cb(scr, mediaGestureCb, LV_EVENT_GESTURE, nullptr);
+      skinUpdate(monitorSnapshot(), monitorWifi());
+      return;
+    }
     if (mediaShown) {
       skinBuildMedia(scr, s, mediaKey);
       lv_obj_add_event_cb(scr, mediaGestureCb, LV_EVENT_GESTURE, nullptr);
@@ -1463,7 +1474,7 @@ static bool homeBlinkOnly() {
   settingsLock();
   int s = gSet.skin;
   settingsUnlock();
-  return home && !idleShown && !fcShown && !mediaShown && !nightShown && s == 5;
+  return home && !idleShown && !fcShown && !mediaShown && !nightShown && !launchShown && s == 5;
 }
 
 // ------------------------------------------------------------------ публичное
@@ -1516,11 +1527,11 @@ void uiLoop() {
   bool wantIdle = idleForce || (offlineSince && now - offlineSince > 20000UL);
   if (home && wantIdle != idleShown) {
     idleShown = wantIdle;
-    if (!fcShown && !mediaShown && !nightShown) pendingRebuild = true;
+    if (!fcShown && !mediaShown && !nightShown && !launchShown) pendingRebuild = true;
   }
   // медиапанель закрывается через 30 с без касаний
-  if (mediaShown && (!home || now - lastActivity > 30000UL)) {
-    mediaShown = false;
+  if ((mediaShown || launchShown) && (!home || now - lastActivity > 30000UL)) {
+    mediaShown = launchShown = false;
     if (home) pendingRebuild = true;
   }
   // прогноз сам закрывается через 30 с
@@ -1597,15 +1608,23 @@ void uiActivity() {
 
 void uiShowNight(bool on) {
   nightShown = on;
-  fcShown = mediaShown = false;
+  fcShown = mediaShown = launchShown = false;
   fcAt = millis();
   home = true;
   pendingRebuild = true;
 }
 
+void uiShowLaunch(bool on) {
+  launchShown = on;
+  fcShown = nightShown = mediaShown = false;
+  home = true;
+  pendingRebuild = true;
+  uiActivity();
+}
+
 void uiShowMedia(bool on) {
   mediaShown = on;
-  fcShown = nightShown = false;
+  fcShown = nightShown = launchShown = false;
   home = true;
   pendingRebuild = true;
   uiActivity();
@@ -1613,7 +1632,7 @@ void uiShowMedia(bool on) {
 
 void uiShowForecast(bool on) {
   fcShown = on;
-  nightShown = mediaShown = false;
+  nightShown = mediaShown = launchShown = false;
   fcAt = millis();
   home = true;
   pendingRebuild = true;

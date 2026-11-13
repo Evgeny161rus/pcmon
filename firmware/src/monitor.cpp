@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/base64.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -29,9 +30,10 @@ static volatile int reqVolume = -1;
 static volatile int reqMute = -1;
 static volatile bool reqSpeed = false;
 static volatile int reqMedia = -1;
+static volatile int reqLaunch = -1;
 
 // ---- связь по USB-кабелю (тот же порт, что и отладочный вывод)
-static const size_t USB_BUF = 4096;
+static const size_t USB_BUF = 16384;   // строка с иконкой — ~9 КБ
 static char* usbBuf = nullptr;
 static size_t usbLen = 0;
 static bool usbOverflow = false;
@@ -160,6 +162,12 @@ static void applyCommands() {
     static const char* keys[3] = {"prev", "play", "next"};
     if (usbActive()) usbSend(String("{\"cmd\":\"media\",\"key\":\"") + keys[mk] + "\"}");
     else postJson("/api/media", String("{\"key\":\"") + keys[mk] + "\"}");
+  }
+  int li = reqLaunch;
+  if (li >= 0) {
+    reqLaunch = -1;
+    if (usbActive()) usbSend("{\"cmd\":\"launch\",\"i\":" + String(li) + "}");
+    else postJson("/api/launch", "{\"i\":" + String(li) + "}");
   }
   if (reqSpeed) {
     reqSpeed = false;
@@ -411,6 +419,64 @@ bool monitorHistory(History& out) {
   return out.ok;
 }
 
+// ------------------------------------------------------------------ быстрый запуск
+static AppTile apps[APP_MAX];
+static uint8_t* appIcons[APP_MAX] = {nullptr};
+static int appN = 0;
+static uint32_t appVer = 0, appRev = 0;
+static const size_t ICON_BYTES = APP_ICON * APP_ICON * 3;
+
+static void handleApps(JsonDocument& doc) {
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  appVer = doc["ver"] | 0UL;
+  appN = constrain((int)(doc["n"] | 0), 0, APP_MAX);
+  int i = 0;
+  for (JsonVariant it : doc["items"].as<JsonArray>()) {
+    if (i >= APP_MAX) break;
+    copyStr(apps[i].name, sizeof(apps[i].name), it["name"] | "");
+    apps[i].confirm = it["confirm"] | false;
+    apps[i].icon = nullptr;   // новые иконки придут следом
+    i++;
+  }
+  appRev++;
+  xSemaphoreGive(statsMux);
+}
+
+static void handleIcon(JsonDocument& doc) {
+  int i = doc["icon"] | -1;
+  if (i < 0 || i >= APP_MAX) return;
+  if ((doc["ver"] | 0UL) != appVer) return;
+  const char* b64 = doc["d"] | "";
+  if (!appIcons[i]) appIcons[i] = (uint8_t*)heap_caps_malloc(ICON_BYTES, MALLOC_CAP_SPIRAM);
+  if (!appIcons[i]) return;
+  // в отдельный буфер: экран может как раз рисовать старую иконку
+  static uint8_t* tmp = nullptr;
+  if (!tmp) tmp = (uint8_t*)heap_caps_malloc(ICON_BYTES, MALLOC_CAP_SPIRAM);
+  if (!tmp) return;
+  size_t out = 0;
+  if (mbedtls_base64_decode(tmp, ICON_BYTES, &out, (const unsigned char*)b64, strlen(b64)) != 0 || out != ICON_BYTES)
+    return;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  memcpy(appIcons[i], tmp, ICON_BYTES);
+  apps[i].icon = appIcons[i];
+  appRev++;
+  xSemaphoreGive(statsMux);
+}
+
+int monitorApps(AppTile* out, uint32_t* rev) {
+  if (!statsMux) return 0;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  int n = appN;
+  for (int i = 0; i < APP_MAX; i++) out[i] = apps[i];
+  if (rev) *rev = appRev;
+  xSemaphoreGive(statsMux);
+  return n;
+}
+
+void monitorRequestLaunch(int i) {
+  if (i >= 0 && i < APP_MAX) reqLaunch = i;
+}
+
 // ------------------------------------------------------------------ USB
 static void handleUsbLine(char* line, size_t len) {
   if (line[0] != '{') return;
@@ -431,6 +497,14 @@ static void handleUsbLine(char* line, size_t len) {
   }
   if (doc["hist"] | 0) {    // последние 12 часов
     handleHistory(doc);
+    return;
+  }
+  if (doc["apps"] | 0) {    // плитки быстрого запуска
+    handleApps(doc);
+    return;
+  }
+  if (!doc["icon"].isNull()) {
+    handleIcon(doc);
     return;
   }
   if (!(doc["ok"] | false)) return;

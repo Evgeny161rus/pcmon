@@ -11,6 +11,7 @@
 //   9 «Шина»        — схема узлов вокруг центрального CPU
 //  10 «HUD»         — сегментированные шкалы телеметрии
 //  11 «Сканлайн»    — история CPU и системные показатели
+//  12 «Звук»        — спектр с микрофона и шумомер
 #include "skins.h"
 
 #include <ctype.h>
@@ -19,6 +20,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "mic.h"
 #include "settings.h"
 
 #include "fonts_px.h"
@@ -29,8 +31,9 @@ static const char* NAMES[] = {
     "Приборы", "Неон", "Минимализм", "Ретро-радио",
     "Часы", "Терминал", "Плитки", "Лампы",
     "Импульс", "Шина", "HUD", "Сканлайн",
+    "Звук",
 };
-static const int SKIN_N = 12;
+static const int SKIN_N = 13;
 
 int skinCount() { return SKIN_N; }
 const char* skinName(int idx) { return NAMES[constrain(idx, 0, SKIN_N - 1)]; }
@@ -115,6 +118,19 @@ struct State {
   // отчёт за 12 часов
   lv_obj_t *hLoad, *hTemp, *hRange, *hT[4], *hSum[4], *hSumV[3], *hEmpty;
   lv_chart_series_t *hCpu, *hGpu, *hCt, *hGt;
+  // «Звук»
+  lv_obj_t *sBar[MIC_BANDS], *sCap[MIC_BANDS], *sDb, *sCat, *sStat, *sTone, *sHist, *sOff;
+  lv_chart_series_t* sHistSer;
+  lv_timer_t* sTimer = nullptr;
+  float sVal[MIC_BANDS], sPeak[MIC_BANDS];
+  uint32_t sSeq = 0;
+  // запуск
+  lv_obj_t *lTile[APP_MAX], *lImg[APP_MAX], *lName[APP_MAX], *lLetter[APP_MAX], *lHint;
+  int lN = 0;
+  uint32_t lRev = 0xFFFFFFFF;
+  int lArmed = -1, lLaunched = -1;
+  uint32_t lArmedAt = 0, lLaunchedAt = 0;
+  uint32_t lAcc = 0, lCard = 0, lLine = 0, lFg = 0;
   bool wxLong = false;   // описание с «ощущается»
 };
 
@@ -124,10 +140,15 @@ static int histN = 0;
 static uint32_t histSeen = 0;
 
 void skinClear() {
+  if (S.sTimer) {
+    lv_timer_delete(S.sTimer);
+    micSetActive(false);
+  }
   S = State();
 }
 
 static inline lv_color_t C(uint32_t v) { return lv_color_hex(v); }
+static uint32_t mix(uint32_t a, uint32_t b, uint8_t k);
 
 // ------------------------------------------------------------------ кирпичики
 static lv_obj_t* box(lv_obj_t* p, int x, int y, int w, int h, uint32_t bg, int r = 0, uint32_t border = 0, int bw = 0) {
@@ -1461,6 +1482,98 @@ static void updScanline(const PcStats& pc) {
   feedChart();
 }
 
+// ------------------------------------------------------------------ 12. Звук
+// Спектр с микрофона на 32 полосы с падающими пиками и шумомер.
+static const int SND_X = 14, SND_Y = 36, SND_H = 128, SND_W = 9;
+
+static void sndFrame(lv_timer_t*) {
+  static MicData m;
+  bool ok = micGet(m);
+  if (!ok) {
+    setText(S.sOff, "Микрофон включается…");
+    return;
+  }
+  setText(S.sOff, "");
+  for (int i = 0; i < MIC_BANDS; i++) {
+    float v = m.bands[i];
+    S.sVal[i] = v > S.sVal[i] ? v : S.sVal[i] * 0.82f + v * 0.18f;
+    if (S.sVal[i] > S.sPeak[i]) S.sPeak[i] = S.sVal[i];
+    else S.sPeak[i] = fmaxf(0.0f, S.sPeak[i] - 1.2f);
+    int h = max(2, (int)(S.sVal[i] * SND_H / 100));
+    lv_obj_set_y(S.sBar[i], SND_Y + SND_H - h);
+    lv_obj_set_height(S.sBar[i], h);
+    int py = SND_Y + SND_H - (int)(S.sPeak[i] * SND_H / 100) - 4;
+    lv_obj_set_y(S.sCap[i], min(py, SND_Y + SND_H - 4));
+  }
+  if (m.seq == S.sSeq) return;
+  S.sSeq = m.seq;
+  static uint32_t lastText = 0;
+  if (millis() - lastText < 250) return;
+  lastText = millis();
+  setFmt(S.sDb, "%.0f", m.db);
+  const char* cat = m.db < 35 ? "тишина" : m.db < 50 ? "тихо" : m.db < 65 ? "разговор" : m.db < 80 ? "громко" : "очень громко";
+  uint32_t cc = m.db < 50 ? 0x42E6B5 : m.db < 65 ? 0x22E3FF : m.db < 80 ? 0xFFB454 : 0xFF4E6D;
+  setText(S.sCat, cat);
+  lv_obj_set_style_text_color(S.sCat, C(cc), 0);
+  setFmt(S.sStat, "макс %.0f · сред %.0f", m.peak, m.avg);
+  if (m.toneHz > 0) {
+    char note[8];
+    micNoteName(m.toneHz, note, sizeof(note));
+    setFmt(S.sTone, "тон %.0f Гц · %s", m.toneHz, note);
+  } else {
+    setText(S.sTone, "");
+  }
+  for (int i = 0; i < MIC_HIST; i++)
+    lv_chart_set_series_value_by_id(S.sHist, S.sHistSer, i, m.hist[i] ? m.hist[i] : LV_CHART_POINT_NONE);
+  lv_chart_refresh(S.sHist);
+}
+
+static void buildSound(lv_obj_t* scr) {
+  const uint32_t BG = 0x06070C, MUT = 0x8C92B0, LINE = 0x1C2030;
+  lv_obj_set_style_bg_color(scr, C(BG), 0);
+  lab(scr, 12, 7, 80, "ЗВУК", f14b, 0xF2F4FF);
+  S.sTone = lab(scr, 72, 9, 150, "", f9b, 0xFFE14D, LV_TEXT_ALIGN_CENTER);
+  S.clock = lab(scr, 210, 6, 98, "--:--", f14b, 0xF2F4FF, LV_TEXT_ALIGN_RIGHT);
+  box(scr, 12, 28, 296, 1, LINE);
+  // сетка и шкала частот
+  for (int k = 1; k < 4; k++) box(scr, 12, SND_Y + k * SND_H / 4, 296, 1, 0x10131C);
+  static const char* fl[4] = {"60", "500", "3к", "16к Гц"};
+  static const int fx[4] = {12, 104, 200, 248};
+  for (int k = 0; k < 4; k++) lab(scr, fx[k], SND_Y + SND_H + 2, k == 3 ? 60 : 40, fl[k], f8, MUT, k == 3 ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT);
+  for (int i = 0; i < MIC_BANDS; i++) {
+    uint8_t k = (uint8_t)(i * 255 / (MIC_BANDS - 1));
+    uint32_t c = mix(0xFF4DF5, 0x22E3FF, k);
+    lv_obj_t* b = box(scr, SND_X + i * SND_W, SND_Y + SND_H - 2, SND_W - 2, 2, c, 1);
+    lv_obj_set_style_bg_grad_color(b, C(mix(c, BG, 150)), 0);
+    lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_VER, 0);
+    S.sBar[i] = b;
+    S.sCap[i] = box(scr, SND_X + i * SND_W, SND_Y + SND_H - 4, SND_W - 2, 2, 0xF2F4FF, 1);
+    S.sVal[i] = S.sPeak[i] = 0;
+  }
+  box(scr, 12, 178, 296, 1, LINE);
+  // шумомер
+  S.sDb = lab(scr, 12, 182, 70, "—", f30b, 0xF2F4FF, LV_TEXT_ALIGN_RIGHT);
+  lab(scr, 86, 196, 30, "дБ", f14b, MUT);
+  S.sCat = lab(scr, 116, 186, 92, "", f14b, 0x42E6B5);
+  S.sStat = lab(scr, 116, 208, 100, "", f8, MUT);
+  lv_obj_t* ch = lv_chart_create(scr);
+  lv_obj_remove_style_all(ch);
+  lv_obj_set_pos(ch, 218, 182);
+  lv_obj_set_size(ch, 90, 40);
+  lv_chart_set_type(ch, LV_CHART_TYPE_BAR);
+  lv_chart_set_point_count(ch, MIC_HIST);
+  lv_chart_set_axis_range(ch, LV_CHART_AXIS_PRIMARY_Y, 20, 100);
+  lv_obj_set_style_pad_column(ch, 0, 0);
+  lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+  S.sHistSer = lv_chart_add_series(ch, C(0x22E3FF), LV_CHART_AXIS_PRIMARY_Y);
+  lv_chart_set_all_values(ch, S.sHistSer, LV_CHART_POINT_NONE);
+  S.sHist = ch;
+  lab(scr, 218, 224, 90, "за минуту", f8, MUT, LV_TEXT_ALIGN_RIGHT);
+  S.sOff = lab(scr, 12, 90, 296, "", f14b, MUT, LV_TEXT_ALIGN_CENTER);
+  micSetActive(true);
+  S.sTimer = lv_timer_create(sndFrame, 40, nullptr);
+}
+
 // ------------------------------------------------------------------ заставка
 static const int IDLE = 100;
 struct IdlePal {
@@ -1479,6 +1592,7 @@ static const IdlePal IDLE_PAL[SKIN_N] = {
     {0x070B16, 0xF0F5FF, 0x8A98B8, 0x8B6CFF, 0x202B4A},
     {0x0B0D12, 0xF4F7FC, 0x8995A7, 0x42E6B5, 0x27303D},
     {0x080D12, 0xE9F6FF, 0x8297A5, 0xFF4E9B, 0x1D3440},
+    {0x06070C, 0xF2F4FF, 0x8C92B0, 0x22E3FF, 0x1C2030},
 };
 
 static uint32_t mix(uint32_t a, uint32_t b, uint8_t k) {
@@ -1841,6 +1955,139 @@ bool skinClockHit(int x, int y) {
   return false;
 }
 
+// ------------------------------------------------------------------ быстрый запуск
+// Открывается свайпом вниз. 4–6 плиток от ПК; выключение/перезагрузка — двойным касанием.
+static const int LAUNCH = 104;
+static lv_image_dsc_t appDsc[APP_MAX];
+static AppTile lApps[APP_MAX];
+
+static void launchTapCb(lv_event_t* e) {
+  int i = (int)(intptr_t)lv_event_get_user_data(e);
+  if (i < 0 || i >= S.lN) return;
+  if (lApps[i].confirm && !(S.lArmed == i && millis() - S.lArmedAt < 3000)) {
+    S.lArmed = i;
+    S.lArmedAt = millis();
+    setText(S.lName[i], "ещё раз — да");
+    lv_obj_set_style_border_color(S.lTile[i], C(0xFF4E6D), 0);
+    lv_obj_set_style_border_width(S.lTile[i], 2, 0);
+    if (S.mKey) S.mKey(20);   // только щелчок
+    return;
+  }
+  S.lArmed = -1;
+  S.lLaunched = i;
+  S.lLaunchedAt = millis();
+  setText(S.lName[i], "запускаю…");
+  lv_obj_set_style_border_color(S.lTile[i], C(S.lAcc), 0);
+  lv_obj_set_style_border_width(S.lTile[i], 2, 0);
+  if (S.mKey) S.mKey(100 + i);
+}
+
+static void launchLayout(int n) {
+  for (int i = 0; i < APP_MAX; i++) {
+    bool on = i < n;
+    if (on) lv_obj_remove_flag(S.lTile[i], LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(S.lTile[i], LV_OBJ_FLAG_HIDDEN);
+    if (!on) continue;
+    int cols = n <= 4 ? 2 : 3;
+    int w = n <= 4 ? 148 : 96, h = 92;
+    int row = i / cols, col = i % cols;
+    int inRow = min(cols, n - row * cols);
+    int x0 = (320 - (inRow * w + (inRow - 1) * 8)) / 2;
+    lv_obj_set_pos(S.lTile[i], x0 + col * (w + 8), 40 + row * 98);
+    lv_obj_set_size(S.lTile[i], w, h);
+    lv_obj_set_pos(S.lImg[i], (w - APP_ICON) / 2 - 1, 10);
+    lv_obj_set_pos(S.lLetter[i], (w - APP_ICON) / 2 - 1, 10);
+    lv_obj_set_pos(S.lName[i], 4, 66);
+    lv_obj_set_width(S.lName[i], w - 10);
+  }
+}
+
+void skinBuildLaunch(lv_obj_t* scr, int baseSkin, void (*onKey)(int)) {
+  fonts();
+  styles();
+  skinClear();
+  S.idx = LAUNCH;
+  S.mKey = onKey;
+  const IdlePal& p = IDLE_PAL[constrain(baseSkin, 0, SKIN_N - 1)];
+  bool light = p.bg == 0xF4F2EE;
+  S.lCard = mix(p.bg, p.fg, light ? 235 : 225);
+  S.lAcc = p.acc;
+  S.lLine = p.line;
+  S.lFg = p.fg;
+  lv_obj_set_style_bg_grad_dir(scr, LV_GRAD_DIR_NONE, 0);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(scr, C(p.bg), 0);
+  lab(scr, 14, 9, 150, "Быстрый запуск", f14b, p.fg);
+  mediaBtn(scr, 272, 4, 40, 30, S.lCard, 0, 9, LV_SYMBOL_CLOSE, &lv_font_montserrat_16, p.mut);
+  S.lHint = lab(scr, 0, 110, 320, "", f14b, p.mut, LV_TEXT_ALIGN_CENTER);
+  for (int i = 0; i < APP_MAX; i++) {
+    lv_obj_t* t = box(scr, 0, 0, 96, 92, S.lCard, 14, p.line, 1);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(t, C(mix(S.lCard, p.acc, 200)), LV_STATE_PRESSED);
+    lv_obj_add_event_cb(t, launchTapCb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    S.lTile[i] = t;
+    lv_obj_t* lt = box(t, 0, 0, APP_ICON, APP_ICON, mix(p.bg, p.fg, 190), LV_RADIUS_CIRCLE);
+    S.lLetter[i] = lab(lt, 0, 12, APP_ICON, "", f20b, p.fg, LV_TEXT_ALIGN_CENTER);
+    S.lLetter[i] = lt;
+    S.lImg[i] = lv_image_create(t);
+    lv_obj_add_flag(S.lImg[i], LV_OBJ_FLAG_HIDDEN);
+    S.lName[i] = lab(t, 4, 66, 86, "", f9b, p.fg, LV_TEXT_ALIGN_CENTER);
+    lv_label_set_long_mode(S.lName[i], LV_LABEL_LONG_DOT);
+    lv_obj_set_height(S.lName[i], 16);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void updLaunch() {
+  uint32_t rev = 0;
+  int n = monitorApps(lApps, &rev);
+  uint32_t now = millis();
+  if (S.lArmed >= 0 && now - S.lArmedAt > 3000) {
+    int i = S.lArmed;
+    S.lArmed = -1;
+    setText(S.lName[i], lApps[i].name);
+    lv_obj_set_style_border_color(S.lTile[i], C(S.lLine), 0);
+    lv_obj_set_style_border_width(S.lTile[i], 1, 0);
+  }
+  if (S.lLaunched >= 0 && now - S.lLaunchedAt > 1200) {
+    S.lLaunched = -1;
+    if (S.mKey) S.mKey(9);   // закрыть
+    return;
+  }
+  if (rev == S.lRev && n == S.lN) return;
+  S.lRev = rev;
+  S.lN = n;
+  setText(S.lHint, n ? "" : "Плитки придут с ПК — нужна программа PC Monitor и кабель USB");
+  launchLayout(n);
+  for (int i = 0; i < n; i++) {
+    if (S.lArmed != i && S.lLaunched != i) setText(S.lName[i], lApps[i].name);
+    lv_obj_t* letterLbl = lv_obj_get_child(S.lLetter[i], 0);
+    char l[5] = {0};
+    const char* nm = lApps[i].name;
+    int len = (nm[0] & 0x80) ? ((nm[0] & 0xE0) == 0xC0 ? 2 : 3) : 1;
+    memcpy(l, nm, min(len, 4));
+    lv_label_set_text(letterLbl, l);
+    if (lApps[i].icon) {
+      lv_image_dsc_t& d = appDsc[i];
+      memset(&d, 0, sizeof(d));
+      d.header.magic = LV_IMAGE_HEADER_MAGIC;
+      d.header.cf = LV_COLOR_FORMAT_RGB565A8;
+      d.header.w = APP_ICON;
+      d.header.h = APP_ICON;
+      d.header.stride = APP_ICON * 2;
+      d.data_size = APP_ICON * APP_ICON * 3;
+      d.data = lApps[i].icon;
+      lv_image_set_src(S.lImg[i], &d);
+      lv_obj_invalidate(S.lImg[i]);
+      lv_obj_remove_flag(S.lImg[i], LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(S.lLetter[i], LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(S.lImg[i], LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(S.lLetter[i], LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+}
+
 // Попадает ли касание в блок погоды текущего скина (значок, температура, прогноз).
 bool skinWeatherHit(int x, int y) {
   lv_obj_t* objs[3 + 8 * 2];
@@ -1882,6 +2129,7 @@ void skinBuild(lv_obj_t* scr, int idx) {
     case 9: buildOrbit(scr); break;
     case 10: buildHud(scr); break;
     case 11: buildScanline(scr); break;
+    case 12: buildSound(scr); break;
     default: buildAnalog(scr); break;
   }
 }
@@ -1902,6 +2150,10 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
   }
   if (S.idx == NIGHT) {
     updNight();
+    return;
+  }
+  if (S.idx == LAUNCH) {
+    updLaunch();
     return;
   }
 
@@ -1945,6 +2197,7 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
     case 9: updOrbit(pc); break;
     case 10: updHud(pc); break;
     case 11: updScanline(pc); break;
+    case 12: break;   // «Звук» обновляется своим таймером
     default: updAnalog(pc); break;
   }
 }

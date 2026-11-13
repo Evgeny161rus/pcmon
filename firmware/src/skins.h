@@ -22,6 +22,9 @@ void skinBuildForecast(lv_obj_t* scr, int baseSkin);
 // Медиапанель. onKey: 0/1/2 — пред./плей-пауза/след., 3/4/5 — громкость −/выкл./+, 9 — закрыть.
 void skinBuildMedia(lv_obj_t* scr, int baseSkin, void (*onKey)(int));
 
+// Быстрый запуск. onKey: 100+i — запустить плитку i, 9 — закрыть, 20 — только щелчок.
+void skinBuildLaunch(lv_obj_t* scr, int baseSkin, void (*onKey)(int));
+
 // Отчёт за последние 12 часов (открывается касанием часов).
 void skinBuildNight(lv_obj_t* scr, int baseSkin);
 bool skinClockHit(int x, int y);
