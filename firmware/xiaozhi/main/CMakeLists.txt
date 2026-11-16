@@ -262,7 +262,7 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
-                    REQUIRES arduino-esp32 arduinojson lvgl esp_lvgl_port esp-opus app_update
+                    REQUIRES arduino-esp32 arduinojson lvgl esp_lvgl_port esp-opus app_update efuse
                     WHOLE_ARCHIVE
                     )
 
