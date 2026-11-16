@@ -434,14 +434,14 @@ static lv_obj_t* newChart(lv_obj_t* p, int x, int y, int w, int h, int pts, bool
 
 static lv_chart_series_t* addSer(lv_obj_t* ch, uint32_t color) {
   lv_chart_series_t* s = lv_chart_add_series(ch, C(color), LV_CHART_AXIS_PRIMARY_Y);
-  if (s) lv_chart_set_all_values(ch, s, LV_CHART_POINT_NONE);
+  if (s) lv_chart_set_all_value(ch, s, LV_CHART_POINT_NONE);
   return s;
 }
 
 static void setRange(lv_obj_t* ch, int mn, int mx) {
   if (!ch) return;
   if (mx <= mn) mx = mn + 1;
-  lv_chart_set_axis_range(ch, LV_CHART_AXIS_PRIMARY_Y, mn, mx);
+  lv_chart_set_range(ch, LV_CHART_AXIS_PRIMARY_Y, mn, mx);
 }
 
 static void seedSeries(lv_obj_t* ch, lv_chart_series_t* ser, const float* arr, int cnt, int pts, float mul = 1.0f) {
@@ -452,7 +452,7 @@ static void seedSeries(lv_obj_t* ch, lv_chart_series_t* ser, const float* arr, i
     int idx = start + i;
     int32_t v = LV_CHART_POINT_NONE;
     if (idx >= 0 && idx < cnt) v = (int32_t)lroundf(arr[idx] * mul);
-    lv_chart_set_series_value_by_id(ch, ser, i, v);
+    lv_chart_set_value_by_id(ch, ser, i, v);
   }
   lv_chart_refresh(ch);
 }
