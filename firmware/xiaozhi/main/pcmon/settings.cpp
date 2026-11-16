@@ -1,0 +1,85 @@
+#include "settings.h"
+
+#include <Preferences.h>
+
+PcmonSettings gSet;
+static Preferences prefs;
+static SemaphoreHandle_t mux;
+
+void settingsBegin() {
+  mux = xSemaphoreCreateRecursiveMutex();
+  prefs.begin("pcmon", false);
+  gSet.wifiSsid = prefs.getString("ssid", "");
+  gSet.wifiPass = prefs.getString("pass", "");
+  gSet.agentHost = prefs.getString("agent", "");
+  gSet.agentPort = prefs.getUShort("port", 8123);
+  gSet.theme = prefs.getUChar("theme", 0);
+  gSet.brightness = prefs.getUChar("bright", 85);
+  gSet.dimSec = prefs.getUShort("dim", 120);
+  gSet.sound = prefs.getBool("sound", true);
+  gSet.sdLog = prefs.getBool("sdlog", false);
+  gSet.skin = prefs.getUChar("skin", 0);
+  gSet.flip = prefs.getBool("flip", false);
+  gSet.alertOn = prefs.getBool("al_on", true);
+  gSet.calOk = prefs.getBool("cal_ok", false);
+  gSet.calXA = prefs.getFloat("cal_xa", 0);
+  gSet.calXB = prefs.getFloat("cal_xb", 0);
+  gSet.calYA = prefs.getFloat("cal_ya", 0);
+  gSet.calYB = prefs.getFloat("cal_yb", 0);
+  gSet.alertCpu = prefs.getUChar("al_cpu", 85);
+  gSet.alertGpu = prefs.getUChar("al_gpu", 83);
+  gSet.alertRam = prefs.getUChar("al_ram", 95);
+  gSet.cityName = prefs.getString("c_name", "Геленджик");
+  gSet.cityGm = prefs.getString("c_gm", "weather-gelendzhik-5213");
+  gSet.cityMail = prefs.getString("c_mail", "gelendzhik");
+  if (gSet.cityName.isEmpty()) gSet.cityName = "Геленджик";
+  if (gSet.cityGm.isEmpty()) gSet.cityGm = "weather-gelendzhik-5213";
+  if (gSet.cityMail.isEmpty()) gSet.cityMail = "gelendzhik";
+  if (gSet.agentPort == 0) gSet.agentPort = 8123;
+}
+
+bool settingsSave() {
+  settingsLock();
+  prefs.putString("ssid", gSet.wifiSsid);
+  prefs.putString("pass", gSet.wifiPass);
+  prefs.putString("agent", gSet.agentHost);
+  prefs.putUShort("port", gSet.agentPort);
+  prefs.putUChar("theme", gSet.theme);
+  prefs.putUChar("bright", gSet.brightness);
+  prefs.putUShort("dim", gSet.dimSec);
+  prefs.putBool("sound", gSet.sound);
+  prefs.putBool("sdlog", gSet.sdLog);
+  prefs.putUChar("skin", gSet.skin);
+  prefs.putBool("flip", gSet.flip);
+  prefs.putBool("al_on", gSet.alertOn);
+  prefs.putBool("cal_ok", gSet.calOk);
+  prefs.putFloat("cal_xa", gSet.calXA);
+  prefs.putFloat("cal_xb", gSet.calXB);
+  prefs.putFloat("cal_ya", gSet.calYA);
+  prefs.putFloat("cal_yb", gSet.calYB);
+  prefs.putUChar("al_cpu", gSet.alertCpu);
+  prefs.putUChar("al_gpu", gSet.alertGpu);
+  prefs.putUChar("al_ram", gSet.alertRam);
+  prefs.putString("c_name", gSet.cityName);
+  prefs.putString("c_gm", gSet.cityGm);
+  prefs.putString("c_mail", gSet.cityMail);
+  settingsUnlock();
+  return true;
+}
+
+void settingsLock() { xSemaphoreTakeRecursive(mux, portMAX_DELAY); }
+void settingsUnlock() { xSemaphoreGiveRecursive(mux); }
+
+String settingsAgentHost() {
+  settingsLock();
+  String s = gSet.agentHost;
+  settingsUnlock();
+  return s;
+}
+
+uint16_t settingsAgentPort() {
+  settingsLock();
+  uint16_t p = gSet.agentPort;
+  settingsUnlock();
+  return p;
+}
