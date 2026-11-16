@@ -63,7 +63,6 @@ void pcmonTask(void*) {
 void pcmonStart() {
   settingsBegin();
   Serial.setRxBufferSize(8192);
-  Serial.setTxTimeoutMs(0);
   Serial.begin(115200);
   ledBegin();
   if (lvgl_port_lock(3000)) {
