@@ -29,7 +29,7 @@ jobs:
           path: firmware/xiaozhi
           esp_idf_version: release-v5.5
           target: esp32s3
-          command: idf.py build && idf.py merge-bin -o pcmon-xiaozhi-esp32s3-merged.bin -f raw
+          command: idf.py build && idf.py merge-bin -o build/pcmon-xiaozhi-esp32s3-merged.bin -f raw
       - name: Upload firmware binaries
         uses: actions/upload-artifact@v4
         with:
