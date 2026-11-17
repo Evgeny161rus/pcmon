@@ -689,26 +689,43 @@ static void mediaGestureCb(lv_event_t*) {
   click();
 }
 
-static void homeGestureCb(lv_event_t*) {
+// Recognize home gestures by displacement, including slow drags. LVGL's
+// velocity-based gesture event can otherwise turn a slow swipe into a click.
+static bool homeDragged = false;
+static lv_point_t homeTouchStart;
+static int homeDx = 0, homeDy = 0;
+static void homeTouchCb(lv_event_t* e) {
   lv_indev_t* in = lv_indev_active();
-  lv_dir_t d = lv_indev_get_gesture_dir(in);
-  if (d == LV_DIR_TOP || d == LV_DIR_BOTTOM) {   // свайп вверх — медиапанель, вниз — быстрый запуск
-    gestureAt = millis();
-    fcShown = nightShown = false;
-    mediaShown = d == LV_DIR_TOP;
-    launchShown = d == LV_DIR_BOTTOM;
-    pendingRebuild = true;
-    lv_indev_wait_release(in);
-    click();
+  if (!in) return;
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_point_t pt;
+  lv_indev_get_point(in, &pt);
+  if (code == LV_EVENT_PRESSED) {
+    homeTouchStart = pt;
+    homeDx = homeDy = 0;
+    homeDragged = false;
     return;
   }
-  if (d != LV_DIR_LEFT && d != LV_DIR_RIGHT) return;
-  gestureAt = millis();
-  nextSkin(d == LV_DIR_LEFT ? 1 : -1);
-  toastSkin = true;
-  pendingRebuild = true;
-  lv_indev_wait_release(in);
-  click();
+  if (code == LV_EVENT_PRESSING || code == LV_EVENT_RELEASED) {
+    homeDx = pt.x - homeTouchStart.x;
+    homeDy = pt.y - homeTouchStart.y;
+    if (abs(homeDx) > 12 || abs(homeDy) > 12) homeDragged = true;
+  }
+  if (homeDragged) gestureAt = millis(); // also suppress the subsequent short click
+  if (code != LV_EVENT_RELEASED || !homeDragged) return;
+  int dx = abs(homeDx), dy = abs(homeDy);
+  if (dx >= 35 && dx * 10 >= dy * 13) {
+    nextSkin(homeDx < 0 ? 1 : -1);
+    toastSkin = true;
+    pendingRebuild = true;
+    click();
+  } else if (dy >= 35 && dy * 10 >= dx * 13) {
+    fcShown = nightShown = false;
+    mediaShown = homeDy < 0;
+    launchShown = homeDy > 0;
+    pendingRebuild = true;
+    click();
+  }
 }
 
 static void flipCb(lv_event_t*) {
@@ -1227,7 +1244,9 @@ static void buildAll() {
     lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(c, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(c, homeClickCb, LV_EVENT_SHORT_CLICKED, nullptr);
-    lv_obj_add_event_cb(c, homeGestureCb, LV_EVENT_GESTURE, nullptr);
+    lv_obj_add_event_cb(c, homeTouchCb, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(c, homeTouchCb, LV_EVENT_PRESSING, nullptr);
+    lv_obj_add_event_cb(c, homeTouchCb, LV_EVENT_RELEASED, nullptr);
     skinUpdate(monitorSnapshot(), monitorWifi());
     return;
   }

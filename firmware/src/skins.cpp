@@ -1589,7 +1589,10 @@ static void buildNew(lv_obj_t* scr, int kind) {
   uint32_t bg = NEW_BG[kind], fg = NEW_FG[kind], acc = NEW_ACC[kind];
   uint32_t muted = kind == 3 ? 0x686C69 : 0xA3AAA9;
   lv_obj_set_style_bg_color(scr, C(bg), 0);
-  S.host = lab(scr, 12, 7, 202, "", f9b, muted);
+  wxPal(kind == 3 ? 0xC54D28 : 0xFFC83D, kind == 3 ? 0x737B80 : 0xCFDEE4,
+        kind == 3 ? 0x24799A : 0x63CDE0, bg);
+  wxNow(scr, 10, 3, 22, lab(scr, 36, 6, 52, "", f14b, fg),
+        lab(scr, 92, 8, 132, "", f9, muted));
   S.clock = lab(scr, 234, 5, 74, "--:--", f16b, fg, LV_TEXT_ALIGN_RIGHT);
   if (kind == 0) {
     const uint32_t col[2] = {acc, 0x63CDE0};
