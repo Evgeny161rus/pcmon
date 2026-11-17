@@ -29,6 +29,7 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -715,10 +716,14 @@ void Application::Start() {
     SystemInfo::PrintHeapStats();
 
     // Install the PC Monitor screen and agent in the same XiaoZhi app image.
-    xTaskCreatePinnedToCore([](void*) {
+    BaseType_t pcmon_init_result = xTaskCreatePinnedToCore([](void*) {
         pcmonStart();
         vTaskDelete(nullptr);
-    }, "pcmon_init", 24576, nullptr, 1, nullptr, 0);
+    }, "pcmon_init", 8192, nullptr, 1, nullptr, 0);
+    if (pcmon_init_result != pdPASS) {
+        ESP_LOGE(TAG, "PC Monitor init task could not start; free internal heap: %u",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+    }
     
     // Enter the main event loop
     MainEventLoop();

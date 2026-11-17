@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <mbedtls/base64.h>
@@ -18,6 +19,7 @@
 #include "ui.h"
 
 static const uint16_t UDP_PORT = 4210;
+static const char* TAG = "PCMonMon";
 
 static WiFiUDP udp;
 static SemaphoreHandle_t statsMux;
@@ -923,8 +925,12 @@ void monitorBegin() {
   memset(&st, 0, sizeof(st));
   usbBuf = (char*)malloc(USB_BUF);
   loadForecast();
-  xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 2, nullptr, 1);
-  xTaskCreatePinnedToCore(weatherTask, "weather", 16384, nullptr, 1, nullptr, 0);
+  BaseType_t netResult = xTaskCreatePinnedToCore(netTask, "net", 8192, nullptr, 2, nullptr, 1);
+  BaseType_t weatherResult = xTaskCreatePinnedToCore(weatherTask, "weather", 8192, nullptr, 1, nullptr, 0);
+  if (netResult != pdPASS) ESP_LOGE(TAG, "net task failed; internal heap=%u",
+                                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+  if (weatherResult != pdPASS) ESP_LOGE(TAG, "weather task failed; internal heap=%u",
+                                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
 }
 
 void monitorWifiPoll() {
