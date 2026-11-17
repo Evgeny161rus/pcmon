@@ -1,10 +1,12 @@
 #include "settings.h"
 
 #include <Preferences.h>
+#include <atomic>
 
 PcmonSettings gSet;
 static Preferences prefs;
 static SemaphoreHandle_t mux;
+static std::atomic<bool> savePending{false};
 
 void settingsBegin() {
   mux = xSemaphoreCreateRecursiveMutex();
@@ -39,6 +41,12 @@ void settingsBegin() {
 }
 
 bool settingsSave() {
+  savePending.store(true);
+  return true;
+}
+
+void settingsFlushPending() {
+  if (!savePending.exchange(false)) return;
   settingsLock();
   prefs.putString("ssid", gSet.wifiSsid);
   prefs.putString("pass", gSet.wifiPass);
@@ -64,7 +72,6 @@ bool settingsSave() {
   prefs.putString("c_gm", gSet.cityGm);
   prefs.putString("c_mail", gSet.cityMail);
   settingsUnlock();
-  return true;
 }
 
 void settingsLock() { xSemaphoreTakeRecursive(mux, portMAX_DELAY); }

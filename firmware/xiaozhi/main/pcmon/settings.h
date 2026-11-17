@@ -30,6 +30,7 @@ extern PcmonSettings gSet;
 
 void settingsBegin();
 bool settingsSave();
+void settingsFlushPending();
 
 void settingsLock();
 void settingsUnlock();

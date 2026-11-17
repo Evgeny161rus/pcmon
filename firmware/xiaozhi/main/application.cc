@@ -719,8 +719,8 @@ void Application::Start() {
     BaseType_t pcmon_init_result = xTaskCreatePinnedToCore([](void*) {
         pcmonStart();
         pcmonInitComplete();
-        vTaskDelete(nullptr);
-    }, "pcmon_init", 8192, nullptr, 1, nullptr, 0);
+        pcmonPersistenceLoop();
+    }, "pcmon_store", 8192, nullptr, 1, nullptr, 0);
     if (pcmon_init_result != pdPASS) {
         ESP_LOGE(TAG, "PC Monitor init task could not start; free internal heap: %u",
                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));

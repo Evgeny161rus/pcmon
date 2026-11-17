@@ -26,13 +26,16 @@ void pcmonTask(void*);
 
 void pcmonWorkersTask(void*) {
   while (!initFinished.load()) vTaskDelay(pdMS_TO_TICKS(20));
-  // Let the temporary init task return so its internal-RAM stack is released.
+  // Wait until the internal-RAM persistence task has finished initialization.
   vTaskDelay(pdMS_TO_TICKS(100));
   monitorStartTasks();
-  BaseType_t result = xTaskCreatePinnedToCore(pcmonTask, "pcmon_ui", 6144, nullptr, 1, nullptr, 0);
+  BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
+      pcmonTask, "pcmon_ui", 8192, nullptr, 1, nullptr, 0,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (result != pdPASS) {
-    ESP_LOGE(TAG, "Could not start PC Monitor UI task; internal heap=%u",
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+    ESP_LOGE(TAG, "Could not start PC Monitor UI task; internal heap=%u, PSRAM=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   }
   vTaskDeleteWithCaps(nullptr);
 }
@@ -63,7 +66,6 @@ void pcmonTask(void*) {
       monitorWifiPoll();
       const PcStats pc = monitorSnapshot();
       const WifiInfo wifi = monitorWifi();
-      monitorSaveForecastIfNeeded();
       if (alertsActive()) ledStatus(pc.cpu, pc.online, wifi.apMode, pc.speedTesting);
       settingsLock();
       const bool logEnabled = gSet.sdLog;
@@ -111,6 +113,14 @@ void pcmonStart() {
 
 void pcmonInitComplete() {
   initFinished.store(true);
+}
+
+void pcmonPersistenceLoop() {
+  for (;;) {
+    settingsFlushPending();
+    monitorSaveForecastIfNeeded();
+    vTaskDelay(pdMS_TO_TICKS(250));
+  }
 }
 
 void pcmonRequestAssistantView(bool visible) {
