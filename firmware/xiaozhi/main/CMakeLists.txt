@@ -34,7 +34,7 @@ list(REMOVE_ITEM PCMON_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/pcmon/led.cpp")
 list(APPEND SOURCES ${PCMON_SOURCES})
 
 set(INCLUDE_DIRS "." "display" "audio_codecs" "protocols" "audio_processing"
-                  "pcmon/fonts")
+                  "pcmon" "pcmon/fonts")
 
 # 添加 IOT 相关文件
 file(GLOB IOT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/iot/things/*.cc)
