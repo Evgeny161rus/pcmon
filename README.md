@@ -126,10 +126,13 @@ idf.py -C firmware/xiaozhi -B C:/pio/pcmon-xiaozhi build
 idf.py -C firmware/xiaozhi -B C:/pio/pcmon-xiaozhi -p COMx flash
 ```
 
-Каталог сборки вынесен из пути OneDrive с кириллицей. GitHub Actions автоматически собирает образ после push; двоичные файлы доступны в артефактах запуска workflow **Build combined ESP32-S3 firmware**.
+Каталог сборки вынесен из пути OneDrive с кириллицей. GitHub Actions автоматически собирает прошивку и объединяет загрузчик, таблицу разделов, модель распознавания и приложение в один образ. Скачайте ZIP артефакта `pcmon-xiaozhi-esp32s3` из последнего успешного запуска workflow [Build combined ESP32-S3 firmware](https://github.com/Evgeny161rus/pcmon/actions/workflows/build-firmware.yml); внутри находится `pcmon-xiaozhi-esp32s3-merged.bin`. Этот полный образ записывается с адреса `0x0`:
 
-**Готовая прошивка:** в [Releases](https://github.com/Evgeny161rus/pcmon/releases/latest) лежат `pcmon-firmware-full.bin` (вся прошивка, пишется с адреса `0x0`) и `pcmon-firmware-app.bin` (только приложение, с адреса `0x10000`). Прошить можно так: `python -m esptool --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin`.
+```powershell
+python -m esptool --chip esp32s3 --port COMx write_flash 0x0 pcmon-xiaozhi-esp32s3-merged.bin
+```
 
+Артефакт создаётся в GitHub Actions, а ручная публикация прошивки в Releases не настроена.
 
 Установите PlatformIO Core в используемое окружение Python и из корня репозитория выполните:
 
