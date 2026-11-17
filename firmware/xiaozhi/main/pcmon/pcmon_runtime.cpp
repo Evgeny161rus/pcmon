@@ -21,13 +21,23 @@ namespace {
 static const char* TAG = "PCMon";
 std::atomic<int> requestedView{-1};
 std::atomic<bool> initFinished{false};
+std::atomic<TaskHandle_t> initTaskHandle{nullptr};
 uint32_t returnToMonitorAt = 0;
 void pcmonTask(void*);
+void pcmonPersistenceTask(void*);
 
 void pcmonWorkersTask(void*) {
   while (!initFinished.load()) vTaskDelay(pdMS_TO_TICKS(20));
-  // Wait until the internal-RAM persistence task has finished initialization.
+  // Let the setup task release its temporary internal-RAM stack.
   vTaskDelay(pdMS_TO_TICKS(100));
+  TaskHandle_t initTask = initTaskHandle.load();
+  if (initTask) vTaskDeleteWithCaps(initTask);
+  BaseType_t persistResult = xTaskCreatePinnedToCore(
+      pcmonPersistenceTask, "pcmon_store", 4096, nullptr, 1, nullptr, 0);
+  if (persistResult != pdPASS) {
+    ESP_LOGE(TAG, "Could not start PC Monitor storage task; internal heap=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+  }
   monitorStartTasks();
   BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
       pcmonTask, "pcmon_ui", 8192, nullptr, 1, nullptr, 0,
@@ -37,7 +47,15 @@ void pcmonWorkersTask(void*) {
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   }
-  vTaskDeleteWithCaps(nullptr);
+  vTaskSuspend(nullptr);
+}
+
+void pcmonPersistenceTask(void*) {
+  for (;;) {
+    settingsFlushPending();
+    monitorSaveForecastIfNeeded();
+    vTaskDelay(pdMS_TO_TICKS(250));
+  }
 }
 
 void pcmonTask(void*) {
@@ -87,11 +105,6 @@ void pcmonStart() {
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   initFinished.store(false);
-  settingsBegin();
-  Serial.setRxBufferSize(8192);
-  Serial.begin(115200);
-  ledBegin();
-  monitorPrepare();
   BaseType_t workerResult = xTaskCreatePinnedToCoreWithCaps(
       pcmonWorkersTask, "pcmon_start", 2048, nullptr, 1, nullptr, 0,
       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -111,16 +124,20 @@ void pcmonStart() {
   }
 }
 
+void pcmonPrepare() {
+  settingsBegin();
+  Serial.setRxBufferSize(8192);
+  Serial.begin(115200);
+  ledBegin();
+  monitorPrepare();
+}
+
 void pcmonInitComplete() {
   initFinished.store(true);
 }
 
-void pcmonPersistenceLoop() {
-  for (;;) {
-    settingsFlushPending();
-    monitorSaveForecastIfNeeded();
-    vTaskDelay(pdMS_TO_TICKS(250));
-  }
+void pcmonSetInitTaskHandle(void* taskHandle) {
+  initTaskHandle.store(static_cast<TaskHandle_t>(taskHandle));
 }
 
 void pcmonRequestAssistantView(bool visible) {
