@@ -154,7 +154,7 @@ $('speed').textContent=s.testing?s.stage:(s.error||(s.down?`↓ ${s.down.toFixed
 }catch(e){$('host').textContent='агент не отвечает'}}
 
 // ---- экран
-const NAMES=["Приборы","Неон","Минимализм","Ретро-радио","Часы","Терминал","Плитки","Лампы","Импульс","Шина","HUD","Сканлайн","Звук"];
+const NAMES=["Приборы","Неон","Минимализм","Ретро-радио","Часы","Терминал","Плитки","Лампы","Импульс","Шина","HUD","Сканлайн","Звук","Матрица","Каскад","Призма","Паспорт"];
 j('/api/previews').then(r=>{NAMES.forEach((n,i)=>{const b=document.createElement('button');b.className='skin';b.type='button';b.setAttribute('aria-pressed','false');
 const img=document.createElement('img');img.alt='';img.src=(r.previews||[])[i]||'';const sp=document.createElement('span');sp.textContent=n;b.append(img,sp);
 b.onclick=async()=>{mark(i);show(await post('/api/screen/set',{skin:i}))};$('skins').appendChild(b)});refreshScreen()}).catch(()=>{});

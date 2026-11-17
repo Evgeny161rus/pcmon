@@ -31,9 +31,9 @@ static const char* NAMES[] = {
     "Приборы", "Неон", "Минимализм", "Ретро-радио",
     "Часы", "Терминал", "Плитки", "Лампы",
     "Импульс", "Шина", "HUD", "Сканлайн",
-    "Звук",
+    "Звук", "Матрица", "Каскад", "Призма", "Паспорт",
 };
-static const int SKIN_N = 13;
+static const int SKIN_N = 17;
 
 int skinCount() { return SKIN_N; }
 const char* skinName(int idx) { return NAMES[constrain(idx, 0, SKIN_N - 1)]; }
@@ -125,6 +125,8 @@ struct State {
   lv_timer_t* sTimer = nullptr;
   float sVal[MIC_BANDS], sPeak[MIC_BANDS];
   uint32_t sSeq = 0;
+  lv_obj_t* matrix[2][50] = {};
+  lv_obj_t* tower[4] = {};
   // запуск
   lv_obj_t *lTile[APP_MAX], *lImg[APP_MAX], *lName[APP_MAX], *lLetter[APP_MAX], *lHint;
   int lN = 0;
@@ -1578,6 +1580,112 @@ static void buildSound(lv_obj_t* scr) {
   S.sTimer = lv_timer_create(sndFrame, 40, nullptr);
 }
 
+
+// Four layouts share only the telemetry formatting, each builds its own geometry.
+static const uint32_t NEW_BG[4] = {0x081312, 0x12121C, 0x161224, 0xF0EDE4};
+static const uint32_t NEW_FG[4] = {0xD9FFF0, 0xF3F0FF, 0xFFF3EA, 0x252B30};
+static const uint32_t NEW_ACC[4] = {0x9FFFA5, 0xBFA0FF, 0xFF896C, 0xC54D28};
+static void buildNew(lv_obj_t* scr, int kind) {
+  uint32_t bg = NEW_BG[kind], fg = NEW_FG[kind], acc = NEW_ACC[kind];
+  uint32_t muted = kind == 3 ? 0x686C69 : 0xA3AAA9;
+  lv_obj_set_style_bg_color(scr, C(bg), 0);
+  S.host = lab(scr, 12, 7, 202, "", f9b, muted);
+  S.clock = lab(scr, 234, 5, 74, "--:--", f16b, fg, LV_TEXT_ALIGN_RIGHT);
+  if (kind == 0) {
+    const uint32_t col[2] = {acc, 0x63CDE0};
+    for (int i = 0; i < 2; ++i) {
+      int x = 12 + i * 156;
+      lab(scr, x, 36, 50, i ? "GPU" : "CPU", f14b, col[i]);
+      S.rowVal[i] = lab(scr, x + 52, 29, 90, "—", f30b, fg, LV_TEXT_ALIGN_RIGHT);
+      for (int j = 0; j < 50; ++j)
+        S.matrix[i][j] = box(scr, x + j % 10 * 14, 70 + j / 10 * 16, 11, 12, 0x18332C, 2);
+      S.rowSub[i] = lab(scr, x, 157, 140, "—", f14b, col[i]);
+    }
+    box(scr, 12, 190, 296, 1, 0x315047);
+    S.net = lab(scr, 12, 200, 296, "", f9b, muted);
+    S.net2 = lab(scr, 12, 220, 296, "", f8, muted);
+  } else if (kind == 1) {
+    const char* names[] = {"CPU", "GPU", "RAM", "SSD"};
+    const uint32_t cols[] = {acc, 0x77D5DD, 0xF2BC78, 0xEC8FA4};
+    for (int i = 0; i < 4; ++i) {
+      int x = 16 + i * 77;
+      box(scr, x, 76, 57, 110, 0x242332, 3);
+      S.tower[i] = box(scr, x, 185, 57, 1, cols[i], 3);
+      S.rowVal[i] = lab(scr, x - 7, 40, 71, "—", f24, fg, LV_TEXT_ALIGN_CENTER);
+      lab(scr, x, 194, 57, names[i], f9b, cols[i], LV_TEXT_ALIGN_CENTER);
+    }
+    S.net = lab(scr, 12, 222, 296, "", f8, muted);
+  } else if (kind == 2) {
+    // A stepped diagonal separates two asymmetric fields, without gauges/cards.
+    for (int j = 0; j < 9; ++j) box(scr, 190 - j * 10, 30 + j * 19, 130 + j * 10, 19, 0x302046);
+    lab(scr, 12, 35, 80, "01 / CPU", f9b, acc);
+    S.rowVal[0] = lab(scr, 8, 52, 185, "—", f64b, fg);
+    S.rowSub[0] = lab(scr, 12, 122, 150, "—", f14b, acc);
+    lab(scr, 212, 104, 94, "02 / GPU", f9b, 0xD4B8FF, LV_TEXT_ALIGN_RIGHT);
+    S.rowVal[1] = lab(scr, 164, 122, 144, "—", f44b, fg, LV_TEXT_ALIGN_RIGHT);
+    S.rowSub[1] = lab(scr, 192, 175, 116, "—", f14b, 0xD4B8FF, LV_TEXT_ALIGN_RIGHT);
+    S.net = lab(scr, 12, 212, 296, "", f9b, fg);
+  } else {
+    box(scr, 12, 34, 5, 40, acc);
+    lab(scr, 25, 33, 215, "SYSTEM / 04", f24, fg);
+    lab(scr, 26, 62, 270, "ТЕХНИЧЕСКИЙ ПАСПОРТ", f8, muted);
+    const char* names[] = {"01  ПРОЦЕССОР", "02  ВИДЕОКАРТА", "03  ПАМЯТЬ", "04  НАКОПИТЕЛЬ"};
+    for (int i = 0; i < 4; ++i) {
+      int y = 84 + i * 27;
+      box(scr, 12, y, 296, 1, 0xCBC9BF);
+      lab(scr, 12, y + 6, 150, names[i], f9b, muted);
+      S.rowVal[i] = lab(scr, 165, y + 3, 143, "—", f16b, fg, LV_TEXT_ALIGN_RIGHT);
+    }
+    for (int j = 0; j < 50; ++j)
+      S.matrix[0][j] = box(scr, 12 + j * 4, 201, j % 3 == 0 ? 2 : 1, 20, 0xCBC9BF);
+    S.net = lab(scr, 220, 201, 88, "CPU", f9b, acc, LV_TEXT_ALIGN_RIGHT);
+    S.net2 = lab(scr, 12, 226, 296, "", f8, muted);
+  }
+}
+
+static void updNew(const PcStats& pc, int kind) {
+  float values[4] = {pc.cpu, pc.gpuPct, pc.ramPct, pc.diskPct};
+  int n = (kind == 0 || kind == 2) ? 2 : 4;
+  for (int i = 0; i < n; ++i) {
+    bool ok = pc.online && (i != 1 || pc.hasGpu);
+    if (ok) setFmt(S.rowVal[i], "%.0f%%", values[i]);
+    else setText(S.rowVal[i], "—");
+    if (kind == 1) {
+      int h = ok ? max(1, (int)(constrain(values[i], 0.0f, 100.0f) * 1.1f)) : 1;
+      lv_obj_set_height(S.tower[i], h);
+      lv_obj_set_y(S.tower[i], 186 - h);
+    }
+  }
+  if (kind == 0 || kind == 2) {
+    float temps[2] = {pc.cpuTemp, pc.gpuTemp};
+    for (int i = 0; i < 2; ++i) {
+      bool ok = pc.online && (i == 0 || pc.hasGpu);
+      if (ok && temps[i] > 0) setFmt(S.rowSub[i], "%.0f°C", temps[i]);
+      else setText(S.rowSub[i], "—");
+      if (kind == 0) for (int j = 0; j < 50; ++j)
+        lv_obj_set_style_bg_color(S.matrix[i][j], C(ok && j < (int)lroundf(values[i] / 2) ? (i ? 0x63CDE0 : NEW_ACC[0]) : 0x18332C), 0);
+    }
+  }
+  if (kind == 3) {
+    if (pc.online && pc.cpuTemp > 0) setFmt(S.rowVal[0], "%.0f%% / %.0f°C", pc.cpu, pc.cpuTemp);
+    for (int j = 0; j < 50; ++j)
+      lv_obj_set_style_bg_color(S.matrix[0][j], C(pc.online && j < (int)lroundf(pc.cpu / 2) ? NEW_ACC[3] : 0xCBC9BF), 0);
+    setText(S.net, pc.online ? "LIVE / CPU" : "OFFLINE");
+  } else if (pc.online) {
+    if (kind == 1) {
+      char ct[16] = "—", gt[16] = "—";
+      if (pc.cpuTemp > 0) snprintf(ct, sizeof(ct), "%.0f°C", pc.cpuTemp);
+      if (pc.hasGpu && pc.gpuTemp > 0) snprintf(gt, sizeof(gt), "%.0f°C", pc.gpuTemp);
+      setFmt(S.net, "CPU %s   GPU %s   ↓ %.1f", ct, gt, pc.netDownMbps);
+    }
+    else setFmt(S.net, "RAM %.0f%%   SSD %.0f%%   ↓ %.1f", pc.ramPct, pc.diskPct, pc.netDownMbps);
+  } else setText(S.net, "ОЖИДАНИЕ ДАННЫХ");
+  if (S.net2) {
+    if (pc.online) setFmt(S.net2, "↓ %.1f  ↑ %.1f Мбит/с   •   %.1f ГГц", pc.netDownMbps, pc.netUpMbps, pc.cpuFreqGHz);
+    else setText(S.net2, "ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ");
+  }
+}
+
 // ------------------------------------------------------------------ заставка
 static const int IDLE = 100;
 struct IdlePal {
@@ -1597,6 +1705,11 @@ static const IdlePal IDLE_PAL[SKIN_N] = {
     {0x0B0D12, 0xF4F7FC, 0x8995A7, 0x42E6B5, 0x27303D},
     {0x080D12, 0xE9F6FF, 0x8297A5, 0xFF4E9B, 0x1D3440},
     {0x06070C, 0xF2F4FF, 0x8C92B0, 0x22E3FF, 0x1C2030},
+    {0x081312, 0xD9FFF0, 0x89948F, 0x9FFFA5, 0x354740},
+    {0x12121C, 0xF3F0FF, 0x89948F, 0xBFA0FF, 0x354740},
+    {0x161224, 0xFFF3EA, 0x89948F, 0xFF896C, 0x354740},
+    {0xF0EDE4, 0x252B30, 0x89948F, 0xC54D28, 0x354740},
+
 };
 
 static uint32_t mix(uint32_t a, uint32_t b, uint8_t k) {
@@ -2179,6 +2292,7 @@ void skinBuild(lv_obj_t* scr, int idx) {
     case 10: buildHud(scr); break;
     case 11: buildScanline(scr); break;
     case 12: buildSound(scr); break;
+    case 13: case 14: case 15: case 16: buildNew(scr, S.idx - 13); break;
     default: buildAnalog(scr); break;
   }
 }
@@ -2246,6 +2360,7 @@ void skinUpdate(const PcStats& pc, const WifiInfo& w) {
     case 9: updOrbit(pc); break;
     case 10: updHud(pc); break;
     case 11: updScanline(pc); break;
+    case 13: case 14: case 15: case 16: updNew(pc, S.idx - 13); break;
     case 12: break;   // «Звук» обновляется своим таймером
     default: updAnalog(pc); break;
   }

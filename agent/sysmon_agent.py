@@ -45,7 +45,7 @@ from panel import PAGE as PANEL_PAGE  # noqa: E402
 from skin_previews import PREVIEWS  # noqa: E402
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -84,7 +84,7 @@ DEFAULT_PING_URL = "https://speed.cloudflare.com/__down?bytes=0"
 
 
 SKIN_NAMES = ["Приборы", "Неон", "Минимализм", "Ретро-радио", "Часы", "Терминал", "Плитки", "Лампы",
-              "Импульс", "Шина", "HUD", "Сканлайн", "Звук"]
+              "Импульс", "Шина", "HUD", "Сканлайн", "Звук", "Матрица", "Каскад", "Призма", "Паспорт"]
 
 # Команда автозапуска задаётся программой-оболочкой (pcmon_app.pyw); без неё автозапуск недоступен.
 SHOW_HOOK = None   # программа-компаньон: показать своё окно
