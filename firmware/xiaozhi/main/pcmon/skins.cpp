@@ -245,13 +245,13 @@ static lv_obj_t* sparkline(lv_obj_t* p, int x, int y, int w, int h, uint32_t col
   lv_chart_set_type(ch, LV_CHART_TYPE_LINE);
   lv_chart_set_point_count(ch, 48);
   lv_chart_set_div_line_count(ch, 0, 0);
-  lv_chart_set_range(ch, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+  lv_chart_set_axis_range(ch, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
   lv_obj_set_style_line_width(ch, 2, LV_PART_ITEMS);
   lv_obj_set_style_line_rounded(ch, true, LV_PART_ITEMS);
   lv_obj_set_style_size(ch, 0, 0, LV_PART_INDICATOR);
   lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
   *ser = lv_chart_add_series(ch, C(col), LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_all_value(ch, *ser, LV_CHART_POINT_NONE);
+  lv_chart_set_all_values(ch, *ser, LV_CHART_POINT_NONE);
   return ch;
 }
 
@@ -260,10 +260,10 @@ static void feedChart() {
   // шкала подстраивается под нагрузку, чтобы при 5 % линия не лежала на дне
   float mx = 0;
   for (int i = 0; i < histN; i++) mx = max(mx, hist[i]);
-  lv_chart_set_range(S.chart, LV_CHART_AXIS_PRIMARY_Y, 0, min(100, max(20, (int)ceilf(mx * 1.3f))));
+  lv_chart_set_axis_range(S.chart, LV_CHART_AXIS_PRIMARY_Y, 0, min(100, max(20, (int)ceilf(mx * 1.3f))));
   for (int i = 0; i < 48; i++) {
     int idx = histN - 48 + i;
-    lv_chart_set_value_by_id(S.chart, S.ser, i, idx >= 0 ? (int32_t)lroundf(hist[idx]) : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.chart, S.ser, i, idx >= 0 ? (int32_t)lroundf(hist[idx]) : LV_CHART_POINT_NONE);
   }
   lv_chart_refresh(S.chart);
 }
@@ -287,7 +287,7 @@ static void styles() {
 }
 
 static lv_obj_t* roundScale(lv_obj_t* p, int size, int angle, int rotation, uint32_t line, uint32_t minor, uint32_t text,
-                            int redFrom, lv_style_t* redTick) {
+                            int redFrom, const lv_style_t* redTick) {
   lv_obj_t* sc = lv_scale_create(p);
   lv_obj_set_size(sc, size, size);
   lv_scale_set_mode(sc, LV_SCALE_MODE_ROUND_INNER);
@@ -311,10 +311,10 @@ static lv_obj_t* roundScale(lv_obj_t* p, int size, int angle, int rotation, uint
   lv_obj_remove_flag(sc, LV_OBJ_FLAG_CLICKABLE);
 
   lv_scale_section_t* sec = lv_scale_add_section(sc);
-  lv_scale_section_set_range(sec, redFrom, 100);
-  lv_scale_section_set_style(sec, LV_PART_MAIN, &stRedMain);
-  lv_scale_section_set_style(sec, LV_PART_INDICATOR, redTick);
-  lv_scale_section_set_style(sec, LV_PART_ITEMS, redTick);
+  lv_scale_set_section_range(sc, sec, redFrom, 100);
+  lv_scale_set_section_style_main(sc, sec, &stRedMain);
+  lv_scale_set_section_style_indicator(sc, sec, redTick);
+  lv_scale_set_section_style_items(sc, sec, redTick);
   return sc;
 }
 
@@ -1525,7 +1525,7 @@ static void sndFrame(lv_timer_t*) {
     setText(S.sTone, "");
   }
   for (int i = 0; i < MIC_HIST; i++)
-    lv_chart_set_value_by_id(S.sHist, S.sHistSer, i, m.hist[i] ? m.hist[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.sHist, S.sHistSer, i, m.hist[i] ? m.hist[i] : LV_CHART_POINT_NONE);
   lv_chart_refresh(S.sHist);
 }
 
@@ -1563,11 +1563,11 @@ static void buildSound(lv_obj_t* scr) {
   lv_obj_set_size(ch, 90, 40);
   lv_chart_set_type(ch, LV_CHART_TYPE_BAR);
   lv_chart_set_point_count(ch, MIC_HIST);
-  lv_chart_set_range(ch, LV_CHART_AXIS_PRIMARY_Y, 20, 100);
+  lv_chart_set_axis_range(ch, LV_CHART_AXIS_PRIMARY_Y, 20, 100);
   lv_obj_set_style_pad_column(ch, 0, 0);
   lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
   S.sHistSer = lv_chart_add_series(ch, C(0x22E3FF), LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_all_value(ch, S.sHistSer, LV_CHART_POINT_NONE);
+  lv_chart_set_all_values(ch, S.sHistSer, LV_CHART_POINT_NONE);
   S.sHist = ch;
   lab(scr, 218, 224, 90, "за минуту", f8, MUT, LV_TEXT_ALIGN_RIGHT);
   S.sOff = lab(scr, 12, 90, 296, "", f14b, MUT, LV_TEXT_ALIGN_CENTER);
@@ -1702,7 +1702,7 @@ void skinBuildForecast(lv_obj_t* scr, int baseSkin) {
   lv_obj_set_style_size(ch, 0, 0, LV_PART_INDICATOR);
   lv_obj_remove_flag(ch, LV_OBJ_FLAG_CLICKABLE);
   S.fcSer = lv_chart_add_series(ch, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
-  lv_chart_set_all_value(ch, S.fcSer, LV_CHART_POINT_NONE);
+  lv_chart_set_all_values(ch, S.fcSer, LV_CHART_POINT_NONE);
   S.fcChart = ch;
   S.fcMin = lab(scr, 12, 222, 296, "", f8, p.mut);
 }
@@ -1721,7 +1721,7 @@ static void updForecast() {
   for (int h = 0; h < 36; h++) {
     Weather f;
     if (!monitorForecast(h, f)) {
-      lv_chart_set_value_by_id(S.fcChart, S.fcSer, h, LV_CHART_POINT_NONE);
+      lv_chart_set_series_value_by_id(S.fcChart, S.fcSer, h, LV_CHART_POINT_NONE);
       continue;
     }
     int v = (int)lroundf(f.temp);
@@ -1729,10 +1729,10 @@ static void updForecast() {
     mx = max(mx, v);
     wmax = max(wmax, (int)lroundf(f.wind));
     n++;
-    lv_chart_set_value_by_id(S.fcChart, S.fcSer, h, v);
+    lv_chart_set_series_value_by_id(S.fcChart, S.fcSer, h, v);
   }
   if (n) {
-    lv_chart_set_range(S.fcChart, LV_CHART_AXIS_PRIMARY_Y, mn - 1, mx + 1);
+    lv_chart_set_axis_range(S.fcChart, LV_CHART_AXIS_PRIMARY_Y, mn - 1, mx + 1);
     setFmt(S.fcMax, "%+d° … %+d°", mn, mx);
     setFmt(S.fcMin, "ветер до %d м/с · Gismeteo", wmax);
   } else {
@@ -1912,7 +1912,7 @@ void skinBuildNight(lv_obj_t* scr, int baseSkin) {
   box(scr, 274, 40, 8, 3, c2, 1);
   lab(scr, 285, 34, 30, "GPU", f8, p.mut);
   S.hLoad = histChart(scr, 50, 50, p.line);
-  lv_chart_set_range(S.hLoad, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+  lv_chart_set_axis_range(S.hLoad, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
   S.hGpu = lv_chart_add_series(S.hLoad, C(c2), LV_CHART_AXIS_PRIMARY_Y);
   S.hCpu = lv_chart_add_series(S.hLoad, C(p.acc), LV_CHART_AXIS_PRIMARY_Y);
 
@@ -1954,15 +1954,15 @@ static void updNight() {
   setText(S.hEmpty, "");
   int mn = 999, mx = -999;
   for (int i = 0; i < 72; i++) {
-    lv_chart_set_value_by_id(S.hLoad, S.hCpu, i, h.cpu[i] >= 0 ? h.cpu[i] : LV_CHART_POINT_NONE);
-    lv_chart_set_value_by_id(S.hLoad, S.hGpu, i, h.gpu[i] >= 0 ? h.gpu[i] : LV_CHART_POINT_NONE);
-    lv_chart_set_value_by_id(S.hTemp, S.hCt, i, h.ct[i] > 0 ? h.ct[i] : LV_CHART_POINT_NONE);
-    lv_chart_set_value_by_id(S.hTemp, S.hGt, i, h.gt[i] > 0 ? h.gt[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hLoad, S.hCpu, i, h.cpu[i] >= 0 ? h.cpu[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hLoad, S.hGpu, i, h.gpu[i] >= 0 ? h.gpu[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hTemp, S.hCt, i, h.ct[i] > 0 ? h.ct[i] : LV_CHART_POINT_NONE);
+    lv_chart_set_series_value_by_id(S.hTemp, S.hGt, i, h.gt[i] > 0 ? h.gt[i] : LV_CHART_POINT_NONE);
     if (h.ct[i] > 0) { mn = min(mn, (int)h.ct[i]); mx = max(mx, (int)h.ct[i]); }
     if (h.gt[i] > 0) { mn = min(mn, (int)h.gt[i]); mx = max(mx, (int)h.gt[i]); }
   }
   if (mx > 0) {
-    lv_chart_set_range(S.hTemp, LV_CHART_AXIS_PRIMARY_Y, mn - 3, mx + 3);
+    lv_chart_set_axis_range(S.hTemp, LV_CHART_AXIS_PRIMARY_Y, mn - 3, mx + 3);
     setFmt(S.hSum[3], "от %d до %d °C", mn, mx);
   }
   lv_chart_refresh(S.hLoad);
