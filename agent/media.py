@@ -19,6 +19,7 @@ import zlib
 COVER = 72   # обложка на экране, пикселей
 
 APP_NAMES = {
+    "ru.yandex.desktop.music": "Яндекс Музыка",
     "spotify": "Spotify", "yandex.music": "Яндекс Музыка", "yandexmusic": "Яндекс Музыка", "yandex music": "Яндекс Музыка",
     "chrome": "Chrome", "msedge": "Edge", "firefox": "Firefox", "browser": "Яндекс Браузер", "yandex": "Яндекс Браузер",
     "opera": "Opera", "aimp": "AIMP", "foobar2000": "foobar2000", "vlc": "VLC", "zunemusic": "Музыка",
