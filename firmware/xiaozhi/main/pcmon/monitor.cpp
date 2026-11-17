@@ -11,6 +11,7 @@
 #include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
+#include <freertos/idf_additions.h>
 #include <mbedtls/base64.h>
 #include <sys/time.h>
 #include <time.h>
@@ -352,6 +353,7 @@ static WxHour wxH[WX_MAX];
 static int wxN = 0;
 static uint32_t wxT0 = 0;        // время первой строки, Unix
 static uint32_t wxSavedMs = 0;
+static bool wxSavePending = false;
 
 static void handleForecast(JsonDocument& doc) {
   JsonArray h = doc["h"];
@@ -372,17 +374,11 @@ static void handleForecast(JsonDocument& doc) {
   memcpy(wxH, tmp, sizeof(WxHour) * n);
   wxN = n;
   wxT0 = t0;
-  xSemaphoreGive(statsMux);
   if (!wxSavedMs || millis() - wxSavedMs > 3600000UL) {   // во флеш не чаще раза в час
     wxSavedMs = millis() ? millis() : 1;
-    Preferences p;
-    if (p.begin("pcmon_wx", false)) {
-      p.putUInt("t0", t0);
-      p.putBytes("h", tmp, sizeof(WxHour) * n);
-      p.end();
-    }
-    Serial.printf("[weather] прогноз от ПК: %d ч\n", n);
+    wxSavePending = true;
   }
+  xSemaphoreGive(statsMux);
 }
 
 static void loadForecast() {
@@ -920,17 +916,48 @@ static void netTask(void*) {
   }
 }
 
-void monitorBegin() {
+void monitorPrepare() {
   statsMux = xSemaphoreCreateMutex();
   memset(&st, 0, sizeof(st));
   usbBuf = (char*)malloc(USB_BUF);
   loadForecast();
-  BaseType_t netResult = xTaskCreatePinnedToCore(netTask, "net", 8192, nullptr, 2, nullptr, 1);
-  BaseType_t weatherResult = xTaskCreatePinnedToCore(weatherTask, "weather", 8192, nullptr, 1, nullptr, 0);
-  if (netResult != pdPASS) ESP_LOGE(TAG, "net task failed; internal heap=%u",
-                                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
-  if (weatherResult != pdPASS) ESP_LOGE(TAG, "weather task failed; internal heap=%u",
-                                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+}
+
+void monitorStartTasks() {
+  BaseType_t netResult = xTaskCreatePinnedToCoreWithCaps(
+      netTask, "net", 8192, nullptr, 2, nullptr, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  BaseType_t weatherResult = xTaskCreatePinnedToCoreWithCaps(
+      weatherTask, "weather", 8192, nullptr, 1, nullptr, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (netResult != pdPASS) ESP_LOGE(TAG, "net task failed; internal heap=%u, PSRAM=%u",
+                                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                                    static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+  if (weatherResult != pdPASS) ESP_LOGE(TAG, "weather task failed; internal heap=%u, PSRAM=%u",
+                                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+}
+
+void monitorSaveForecastIfNeeded() {
+  if (!statsMux) return;
+  WxHour saved[WX_MAX];
+  int count = 0;
+  uint32_t firstTime = 0;
+  xSemaphoreTake(statsMux, portMAX_DELAY);
+  const bool pending = wxSavePending;
+  if (pending) {
+    count = wxN;
+    firstTime = wxT0;
+    memcpy(saved, wxH, sizeof(WxHour) * count);
+    wxSavePending = false;
+  }
+  xSemaphoreGive(statsMux);
+  if (!pending || count <= 0) return;
+  Preferences p;
+  if (p.begin("pcmon_wx", false)) {
+    p.putUInt("t0", firstTime);
+    p.putBytes("h", saved, sizeof(WxHour) * count);
+    p.end();
+  }
+  Serial.printf("[weather] прогноз от ПК: %d ч\n", count);
 }
 
 void monitorWifiPoll() {

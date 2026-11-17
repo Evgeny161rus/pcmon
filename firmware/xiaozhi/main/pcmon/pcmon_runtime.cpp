@@ -6,6 +6,7 @@
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 #include <lvgl.h>
 
@@ -19,7 +20,22 @@
 namespace {
 static const char* TAG = "PCMon";
 std::atomic<int> requestedView{-1};
+std::atomic<bool> initFinished{false};
 uint32_t returnToMonitorAt = 0;
+void pcmonTask(void*);
+
+void pcmonWorkersTask(void*) {
+  while (!initFinished.load()) vTaskDelay(pdMS_TO_TICKS(20));
+  // Let the temporary init task return so its internal-RAM stack is released.
+  vTaskDelay(pdMS_TO_TICKS(100));
+  monitorStartTasks();
+  BaseType_t result = xTaskCreatePinnedToCore(pcmonTask, "pcmon_ui", 6144, nullptr, 1, nullptr, 0);
+  if (result != pdPASS) {
+    ESP_LOGE(TAG, "Could not start PC Monitor UI task; internal heap=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+  }
+  vTaskDeleteWithCaps(nullptr);
+}
 
 void pcmonTask(void*) {
   uint32_t lastSlow = 0;
@@ -47,6 +63,7 @@ void pcmonTask(void*) {
       monitorWifiPoll();
       const PcStats pc = monitorSnapshot();
       const WifiInfo wifi = monitorWifi();
+      monitorSaveForecastIfNeeded();
       if (alertsActive()) ledStatus(pc.cpu, pc.online, wifi.apMode, pc.speedTesting);
       settingsLock();
       const bool logEnabled = gSet.sdLog;
@@ -67,10 +84,19 @@ void pcmonStart() {
   ESP_LOGI(TAG, "Starting PC Monitor; internal heap=%u, PSRAM=%u",
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+  initFinished.store(false);
   settingsBegin();
   Serial.setRxBufferSize(8192);
   Serial.begin(115200);
   ledBegin();
+  monitorPrepare();
+  BaseType_t workerResult = xTaskCreatePinnedToCoreWithCaps(
+      pcmonWorkersTask, "pcmon_start", 2048, nullptr, 1, nullptr, 0,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (workerResult != pdPASS) {
+    ESP_LOGE(TAG, "Could not start PC Monitor worker coordinator; internal heap=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+  }
   if (lvgl_port_lock(3000)) {
     lv_obj_t* assistantScreen = lv_screen_active();
     uiInit();
@@ -81,12 +107,10 @@ void pcmonStart() {
   } else {
     ESP_LOGE(TAG, "Could not lock LVGL to initialize PC Monitor");
   }
-  monitorBegin();
-  BaseType_t result = xTaskCreatePinnedToCore(pcmonTask, "pcmon_ui", 8192, nullptr, 1, nullptr, 0);
-  if (result != pdPASS) {
-    ESP_LOGE(TAG, "Could not start PC Monitor UI task; internal heap=%u",
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
-  }
+}
+
+void pcmonInitComplete() {
+  initFinished.store(true);
 }
 
 void pcmonRequestAssistantView(bool visible) {

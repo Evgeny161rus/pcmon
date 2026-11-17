@@ -718,6 +718,7 @@ void Application::Start() {
     // Install the PC Monitor screen and agent in the same XiaoZhi app image.
     BaseType_t pcmon_init_result = xTaskCreatePinnedToCore([](void*) {
         pcmonStart();
+        pcmonInitComplete();
         vTaskDelete(nullptr);
     }, "pcmon_init", 8192, nullptr, 1, nullptr, 0);
     if (pcmon_init_result != pdPASS) {
