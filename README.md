@@ -112,22 +112,6 @@ Windows не отдаёт температуру процессора без д�
 
 ## Сборка и прошивка
 
-### Объединённая прошивка XiaoZhi + PC Monitor
-
-В `firmware/xiaozhi` находится прошивка для Freenove ES3C28P (ESP32-S3, экран 2,8"). Она объединяет облачного XiaoZhi и 13 экранов PC Monitor: голосовой помощник работает на плате без включённого ПК, а мониторинг Windows и приложение-компаньон по-прежнему используют Python-агент на ПК. Во время разговора показывается экран XiaoZhi; кнопки `AI` и `PC` переключают его вручную. Анализатор звука PC Monitor использует тот же поток микрофона.
-
-Для облачного помощника нужны Wi-Fi 2,4 ГГц, интернет и привязка устройства в аккаунте [xiaozhi.me](https://xiaozhi.me/). В адаптации Freenove заявлены китайский, кантонский, английский, японский и корейский; русский язык не заявлен. Облачный сервис сейчас доступен бесплатно, но постоянная бесплатность не гарантируется. Управление умным домом настраивается через возможности и MCP-интеграции выбранного облачного сервиса. При первом включении используйте кнопку BOOT для настройки Wi-Fi; wake word прошивки — **Hi, ESP**.
-
-Для локальной сборки установите ESP-IDF 5.4 и выполните из корня репозитория:
-
-```powershell
-idf.py -C firmware/xiaozhi -B C:/pio/pcmon-xiaozhi set-target esp32s3
-idf.py -C firmware/xiaozhi -B C:/pio/pcmon-xiaozhi build
-idf.py -C firmware/xiaozhi -B C:/pio/pcmon-xiaozhi -p COMx flash
-```
-
-Каталог сборки вынесен из пути OneDrive с кириллицей. GitHub Actions автоматически собирает образ после push; двоичные файлы доступны в артефактах запуска workflow **Build combined ESP32-S3 firmware**.
-
 **Готовая прошивка:** в [Releases](https://github.com/Evgeny161rus/pcmon/releases/latest) лежат `pcmon-firmware-full.bin` (вся прошивка, пишется с адреса `0x0`) и `pcmon-firmware-app.bin` (только приложение, с адреса `0x10000`). Прошить можно так: `python -m esptool --chip esp32s3 write_flash 0x0 pcmon-firmware-full.bin`.
 
 
