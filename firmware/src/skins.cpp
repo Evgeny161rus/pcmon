@@ -21,6 +21,7 @@
 #include <time.h>
 
 #include "mic.h"
+#include "display.h"
 #include "settings.h"
 
 #include "fonts_px.h"
@@ -1493,6 +1494,9 @@ static void updScanline(const PcStats& pc) {
 static const int SND_X = 14, SND_Y = 36, SND_H = 128, SND_W = 9;
 
 static void sndFrame(lv_timer_t*) {
+  // Leave the display bus free while a finger is down: spectrum redraws
+  // otherwise delay touch samples enough to turn a swipe into a tap.
+  if (displayTouchRaw(nullptr, nullptr)) return;
   static MicData m;
   bool ok = micGet(m);
   if (!ok) {
@@ -1577,7 +1581,7 @@ static void buildSound(lv_obj_t* scr) {
   lab(scr, 218, 224, 90, "за минуту", f8, MUT, LV_TEXT_ALIGN_RIGHT);
   S.sOff = lab(scr, 12, 90, 296, "", f14b, MUT, LV_TEXT_ALIGN_CENTER);
   micSetActive(true);
-  S.sTimer = lv_timer_create(sndFrame, 40, nullptr);
+  S.sTimer = lv_timer_create(sndFrame, 66, nullptr);
 }
 
 

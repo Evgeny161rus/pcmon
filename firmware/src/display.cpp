@@ -131,7 +131,7 @@ static void touchRead(lv_indev_t*, lv_indev_data_t* data) {
   static bool down = false;
   static uint32_t last = 0;
 
-  if (millis() - last >= 15) {
+  if (millis() - last >= 10) {
     last = millis();
     uint8_t b[5];
     if (ftRead(0x02, b, 5)) {
@@ -250,6 +250,8 @@ bool displayInit() {
   indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, touchRead);
+  // Poll faster than animated skins redraw, so short swipes retain their path.
+  lv_timer_set_period(lv_indev_get_read_timer(indev), 10);
 
   Serial.printf("[lcd] %dx%d, буферы в %s, free int %u KB\n", LCD_W, LCD_H,
                 esp_ptr_external_ram(b1) ? "PSRAM" : "RAM",
