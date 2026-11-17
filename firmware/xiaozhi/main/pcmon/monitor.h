@@ -124,9 +124,7 @@ Weather monitorWeather();
 // Прогноз от ПК на час now+ahead (0 = текущий час). false — прогноза на этот час нет.
 bool monitorForecast(int ahead, Weather& out);
 
-void monitorPrepare();
-void monitorStartTasks();
-void monitorSaveForecastIfNeeded();
+void monitorBegin();
 void monitorWifiPoll();
 PcStats monitorSnapshot();
 WifiInfo monitorWifi();
