@@ -45,7 +45,7 @@ from panel import PAGE as PANEL_PAGE  # noqa: E402
 from skin_previews import PREVIEWS  # noqa: E402
 
 APP_NAME = "PC Monitor Agent"
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 UDP_MAGIC = b"PCMON?"
 BEACON_PREFIX = "PCMON1"
 
@@ -56,6 +56,15 @@ except Exception:
     pass
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+SM_SHUTTINGDOWN = 0x2000
+
+
+def windows_is_shutting_down() -> bool:
+    """Return whether Windows has begun shutting down the current session."""
+    try:
+        return bool(ctypes.windll.user32.GetSystemMetrics(SM_SHUTTINGDOWN))
+    except Exception:
+        return False
 
 DEFAULT_DOWN_URLS = ",".join(
     [
@@ -1196,6 +1205,10 @@ class Agent:
         return percent, used / 1024**3, total / 1024**3
 
     def _gpu_nvidia(self) -> None:
+        # nvidia-smi can show a Windows loader error dialog if started while
+        # NVIDIA services are being stopped during system shutdown.
+        if windows_is_shutting_down():
+            return
         try:
             out = subprocess.run(
                 [
