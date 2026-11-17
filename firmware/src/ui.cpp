@@ -712,7 +712,11 @@ static void homeTouchCb(lv_event_t* e) {
     if (abs(homeDx) > 12 || abs(homeDy) > 12) homeDragged = true;
   }
   if (homeDragged) gestureAt = millis(); // also suppress the subsequent short click
-  if (code != LV_EVENT_RELEASED || !homeDragged) return;
+  if (code != LV_EVENT_RELEASED) return;
+  Serial.printf("[touch] skin=%u start=%ld,%ld end=%ld,%ld drag=%d\n",
+                (unsigned)gSet.skin, (long)homeTouchStart.x, (long)homeTouchStart.y,
+                (long)pt.x, (long)pt.y, (int)homeDragged);
+  if (!homeDragged) return;
   int dx = abs(homeDx), dy = abs(homeDy);
   if (dx >= 35 && dx * 10 >= dy * 13) {
     nextSkin(homeDx < 0 ? 1 : -1);

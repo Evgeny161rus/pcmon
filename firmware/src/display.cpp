@@ -129,14 +129,18 @@ void displayTouchHold(bool hold) { holdTouch = hold; }
 static void touchRead(lv_indev_t*, lv_indev_data_t* data) {
   static int16_t lx = 160, ly = 120;
   static bool down = false;
-  static uint32_t last = 0;
+  static uint32_t last = 0, releasedAt = 0;
+  static bool releasePending = false;
 
   if (millis() - last >= 10) {
     last = millis();
     uint8_t b[5];
     if (ftRead(0x02, b, 5)) {
       uint8_t n = b[0] & 0x0F;
-      if (n > 0) {
+      // FT6336 can report the final UP coordinates with TD_STATUS == 0.
+      // Keep that final point even when intermediate movement was not sampled.
+      bool upPoint = down && n == 0 && (b[1] >> 6) == 1;
+      if (n > 0 || upPoint) {
         int rx = ((b[1] & 0x0F) << 8) | b[2];
         int ry = ((b[3] & 0x0F) << 8) | b[4];
         rawX = rx;
@@ -158,10 +162,15 @@ static void touchRead(lv_indev_t*, lv_indev_data_t* data) {
           ly = LCD_H - 1 - ly;
         }
       }
-      down = n > 0;
-    } else {
-      down = false;
+      if (n > 0) {
+        down = true;
+        releasePending = false;
+      } else if (down) {
+        if (!releasePending) { releasedAt = millis(); releasePending = true; }
+        if (millis() - releasedAt >= 40) { down = false; releasePending = false; }
+      }
     }
+    // An I2C error is not a release. Wait for confirmed no-contact frames.
     rawDown = down;
   }
   if (holdTouch) {
