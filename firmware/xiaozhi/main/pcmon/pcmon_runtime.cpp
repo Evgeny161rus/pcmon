@@ -2,8 +2,6 @@
 
 #include <Arduino.h>
 #include <atomic>
-#include <esp_heap_caps.h>
-#include <esp_log.h>
 #include <esp_lvgl_port.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -17,7 +15,6 @@
 #include "ui.h"
 
 namespace {
-static const char* TAG = "PCMon";
 std::atomic<int> requestedView{-1};
 uint32_t returnToMonitorAt = 0;
 
@@ -64,9 +61,6 @@ void pcmonTask(void*) {
 }  // namespace
 
 void pcmonStart() {
-  ESP_LOGI(TAG, "Starting PC Monitor; internal heap=%u, PSRAM=%u",
-           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
   settingsBegin();
   Serial.setRxBufferSize(8192);
   Serial.begin(115200);
@@ -77,16 +71,9 @@ void pcmonStart() {
     uiSetAssistantScreen(assistantScreen);
     uiSetAssistantVisible(false);
     lvgl_port_unlock();
-    ESP_LOGI(TAG, "PC Monitor screen initialized");
-  } else {
-    ESP_LOGE(TAG, "Could not lock LVGL to initialize PC Monitor");
   }
   monitorBegin();
-  BaseType_t result = xTaskCreatePinnedToCore(pcmonTask, "pcmon_ui", 8192, nullptr, 1, nullptr, 0);
-  if (result != pdPASS) {
-    ESP_LOGE(TAG, "Could not start PC Monitor UI task; internal heap=%u",
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
-  }
+  xTaskCreatePinnedToCore(pcmonTask, "pcmon_ui", 24576, nullptr, 1, nullptr, 0);
 }
 
 void pcmonRequestAssistantView(bool visible) {
