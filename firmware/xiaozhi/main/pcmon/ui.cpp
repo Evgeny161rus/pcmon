@@ -1373,7 +1373,7 @@ static void refreshTop(const PcStats& pc, const WifiInfo& w) {
 }
 
 static void refreshOverview(const PcStats& pc) {
-  char v[16], d[40];
+  char v[16], d[24];
   bool on = pc.online;
 
   snprintf(v, sizeof(v), on ? "%.0f%%" : "—", pc.cpu);
